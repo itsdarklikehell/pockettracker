@@ -187,3 +187,9 @@ apk/
 
 # Gradle wrapper JAR must be committed — it bootstraps the build on CI and fresh clones
 !gradle/wrapper/gradle-wrapper.jar
+# Python cache (generated, never tracked)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
