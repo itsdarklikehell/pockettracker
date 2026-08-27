@@ -7,19 +7,42 @@ namespace pt::ui {
 
 using songcore::TableRow;
 
+// ─── Where FX2's and FX3's playback markers stand, and therefore how wide the gap before those two
+//     columns is ─────────────────────────────────────────────────────────────────────────────────
+//
+// ⚠️ ONE definition, read by BOTH the column layout and the marker draw. Sized rather than chosen: a
+// cell paints its background CHAR_SPACING past the text on either side, so the marker needs
+// MARKER_CLEAR of daylight on each side of it or the cursor's filled background on the FX1 value
+// touches the `>` and it reads as part of that value instead of as the next column's playhead.
+constexpr int MARKER_CLEAR = 4;
+constexpr int GLYPH_W      = CHAR_W - CHAR_SPACING;
+
+/** The gap an FX value cell's x must leave before the NEXT FX column's name x. */
+constexpr int marker_gap() { return 2 * CHAR_SPACING + 2 * MARKER_CLEAR + GLYPH_W; }
+
+/** …and where in that gap the marker itself goes, given the name x on its right. */
+constexpr int marker_x(int name_x) { return name_x - CHAR_SPACING - MARKER_CLEAR - GLYPH_W; }
+
 void TableModule::draw(Canvas& c, int x, int y, const TableState& s) const {
     const Theme& t = s.theme;
 
     c.fill_rect(x, y, WIDTH, HEIGHT, t.background);
 
+    // ⚠️ THE GAP BEFORE EACH OF THE THREE FX COLUMNS IS WIDER THAN THE OTHERS, and it is not
+    // decoration: that is where the playback markers stand, and the width is derived rather than
+    // chosen. A cell paints its background CHAR_SPACING past the text on both sides, so a two-glyph
+    // value ends `2·CHAR_W` past its x; the marker is one glyph wide and wants MARKER_CLEAR either
+    // side of it, or the cursor's filled background touches it and the `>` reads as part of the
+    // value to its left. The extra comes out of the slack at the right edge; every column keeps the
+    // width it had.
     int       colX       = x + 10;
     const int stepX      = colX; colX += 30 + 10;
     const int transposeX = colX; colX += 45 + 15;
-    const int volX       = colX; colX += 30 + 15;
+    const int volX       = colX; colX += 2 * CHAR_W + marker_gap();
     const int fx1NameX   = colX; colX += 45 + 10;
-    const int fx1ValueX  = colX; colX += 30 + 15;
+    const int fx1ValueX  = colX; colX += 2 * CHAR_W + marker_gap();
     const int fx2NameX   = colX; colX += 45 + 10;
-    const int fx2ValueX  = colX; colX += 30 + 15;
+    const int fx2ValueX  = colX; colX += 2 * CHAR_W + marker_gap();
     const int fx3NameX   = colX; colX += 45 + 10;
     const int fx3ValueX  = colX;
 
@@ -29,12 +52,15 @@ void TableModule::draw(Canvas& c, int x, int y, const TableState& s) const {
     // two speeds. It is shown here because this is where you feel it.
     c.draw_text(hex2(s.ticRate) + " TIC", x + WIDTH - 120, rowY, t.textParam, CHAR_SPACING, FONT_SCALE);
 
+    // The header lights for the column the cursor is in — it is half of what the row highlight used
+    // to say, the row number being the other half. An FX header covers its name AND its value cell.
     rowY = y + ROW_HEIGHT + 14 + TEXT_PADDING;
-    c.draw_text("N",   transposeX, rowY, t.textParam, CHAR_SPACING, FONT_SCALE);
-    c.draw_text("V",   volX,       rowY, t.textParam, CHAR_SPACING, FONT_SCALE);
-    c.draw_text("FX1", fx1NameX,   rowY, t.textParam, CHAR_SPACING, FONT_SCALE);
-    c.draw_text("FX2", fx2NameX,   rowY, t.textParam, CHAR_SPACING, FONT_SCALE);
-    c.draw_text("FX3", fx3NameX,   rowY, t.textParam, CHAR_SPACING, FONT_SCALE);
+    const int cc = s.cursorColumn;
+    c.draw_text("N",   transposeX, rowY, header_color(cc, 1, 1, t), CHAR_SPACING, FONT_SCALE);
+    c.draw_text("V",   volX,       rowY, header_color(cc, 2, 2, t), CHAR_SPACING, FONT_SCALE);
+    c.draw_text("FX1", fx1NameX,   rowY, header_color(cc, 3, 4, t), CHAR_SPACING, FONT_SCALE);
+    c.draw_text("FX2", fx2NameX,   rowY, header_color(cc, 5, 6, t), CHAR_SPACING, FONT_SCALE);
+    c.draw_text("FX3", fx3NameX,   rowY, header_color(cc, 7, 8, t), CHAR_SPACING, FONT_SCALE);
 
     // Asked once and read three times a row: an AUS/AUF cell no ramp uses draws dimmed (draw_row).
     // It is the pairing the ENGINE itself runs — the same walk, over the same three FX slots — so the
@@ -58,49 +84,65 @@ void TableModule::draw_row(Canvas& c, int x, int y, int index, const TableRow& r
 
     const int dataRowY = y + ROW_HEIGHT + 14 + ROW_HEIGHT + (index * ROW_HEIGHT);
 
-    bool isRowSelected = false;
-    if (s.selectionMode) {
-        for (int col = 1; col <= 8 && !isRowSelected; ++col) isRowSelected = s.isCellSelected(index, col);
-    }
-
-    c.fill_rect(x, dataRowY, WIDTH, ROW_HEIGHT,
-                row_bg_color(index, s.cursorRow, s.playbackRow, s.playbackRow >= 0, isRowSelected, t));
+    c.fill_rect(x, dataRowY, WIDTH, ROW_HEIGHT, row_bg_color(index, t));
 
     const int textY = dataRowY + TEXT_PADDING;
+
+    // Left to right, column by column — RowCells joins a selected run into one block across the
+    // gutters, and it can only do that if the cells arrive in the order they are laid out.
+    RowCells cells(c, textY, t);
 
     const auto cur = [&](int col) { return index == s.cursorRow && s.cursorColumn == col; };
     const auto sel = [&](int col) { return s.selectionMode && s.isCellSelected(index, col); };
 
-    // No every-4th accent: a table row is a tic, not a beat.
-    c.draw_text(hex1(index), stepX, textY, cur(0) ? t.textCursor : t.textEmpty, CHAR_SPACING,
-                FONT_SCALE);
+    // No every-4th accent: a table row is a tic, not a beat. The number lights across the whole
+    // cursor row — that is what now says which row is being edited — and column 0 is a real cursor
+    // position, so it goes through the painter and gets the cell background when the cursor is on it.
+    cells.cell(hex1(index), stepX, cur(0), /*is_selected=*/false, /*is_empty=*/false,
+               (index == s.cursorRow) ? t.textCursor : t.textEmpty);
 
     // Transpose is always shown — 0x00 is "no transpose", drawn dim, but it is still a value.
-    draw_cell(c, hex2(row.transpose), transposeX, textY, cur(1), sel(1),
-              /*is_empty=*/row.transpose == 0x00, t.textValue, t);
+    cells.cell(hex2(row.transpose), transposeX, cur(1), sel(1),
+               /*is_empty=*/row.transpose == 0x00, t.textValue);
 
     // Volume −1 IS empty: "leave the note's own volume alone".
-    draw_cell(c, row.volume == -1 ? "--" : hex2(row.volume), volX, textY, cur(2), sel(2),
-              /*is_empty=*/row.volume == -1, t.textValue, t);
+    cells.cell(row.volume == -1 ? "--" : hex2(row.volume), volX, cur(2), sel(2),
+               /*is_empty=*/row.volume == -1, t.textValue);
 
     // Both FX cells are textValue here — see the header. FX1 = cols 3/4, FX2 = 5/6, FX3 = 7/8.
     // An FX pair dims when the slot is unset — and an AUS/AUF cell dims when no ramp uses it, which
     // is the only place the editor says that a fade the author thought they wrote is not one. Both
-    // reach draw_cell through the one flag, because an inert cell does exactly what an unset cell
+    // reach the painter through the one flag, because an inert cell does exactly what an unset cell
     // does: nothing.
     const auto fxDim = [&](int type, int slot) {
         return type == 0x00 || !rampCells.active(type, index, slot);
     };
 
     const bool fx1Empty = fxDim(row.fx1Type, 1);
-    draw_cell(c, effect_name(row.fx1Type), fx1NameX,  textY, cur(3), sel(3), fx1Empty, t.textValue, t);
-    draw_cell(c, hex2(row.fx1Value),       fx1ValueX, textY, cur(4), sel(4), fx1Empty, t.textValue, t);
+    cells.cell(effect_name(row.fx1Type), fx1NameX,  cur(3), sel(3), fx1Empty, t.textValue);
+    cells.cell(hex2(row.fx1Value),       fx1ValueX, cur(4), sel(4), fx1Empty, t.textValue);
     const bool fx2Empty = fxDim(row.fx2Type, 2);
-    draw_cell(c, effect_name(row.fx2Type), fx2NameX,  textY, cur(5), sel(5), fx2Empty, t.textValue, t);
-    draw_cell(c, hex2(row.fx2Value),       fx2ValueX, textY, cur(6), sel(6), fx2Empty, t.textValue, t);
+    cells.cell(effect_name(row.fx2Type), fx2NameX,  cur(5), sel(5), fx2Empty, t.textValue);
+    cells.cell(hex2(row.fx2Value),       fx2ValueX, cur(6), sel(6), fx2Empty, t.textValue);
     const bool fx3Empty = fxDim(row.fx3Type, 3);
-    draw_cell(c, effect_name(row.fx3Type), fx3NameX,  textY, cur(7), sel(7), fx3Empty, t.textValue, t);
-    draw_cell(c, hex2(row.fx3Value),       fx3ValueX, textY, cur(8), sel(8), fx3Empty, t.textValue, t);
+    cells.cell(effect_name(row.fx3Type), fx3NameX,  cur(7), sel(7), fx3Empty, t.textValue);
+    cells.cell(hex2(row.fx3Value),       fx3ValueX, cur(8), sel(8), fx3Empty, t.textValue);
+
+    // Three playheads, FOUR markers. Lanes 1 and 2 get one each, in the gutter ahead of their own FX
+    // column. Lane 0 gets TWO, and the repeat is deliberate: beside the row number, because it is the
+    // note and volume columns' playhead as well, and again ahead of FX1, so that all three FX columns
+    // are marked the same way and the eye can read down the row. A column that has stopped reads −1
+    // and simply has no marker.
+    //
+    // ⚠️ AND THEY ARE DRAWN AFTER THE CELLS, because three of the four stand in a gutter BETWEEN two
+    // value columns: a selection covering the columns on both sides fills that gutter, and a marker
+    // drawn first is a marker the fill erases.
+    if (s.playbackRows[0] == index) {
+        draw_playhead(c, stepX + CHAR_W, textY, t);
+        draw_playhead(c, marker_x(fx1NameX), textY, t);
+    }
+    if (s.playbackRows[1] == index) draw_playhead(c, marker_x(fx2NameX), textY, t);
+    if (s.playbackRows[2] == index) draw_playhead(c, marker_x(fx3NameX), textY, t);
 }
 
 CursorContext TableModule::cursor_context(const TableState& s) const {
@@ -109,7 +151,7 @@ CursorContext TableModule::cursor_context(const TableState& s) const {
         case 0: return cc::read_only();
 
         case 1: {
-            // The SAME semitone context the chain's TSP uses, so A+LEFT/RIGHT is ±1 octave on both.
+            // The SAME semitone context the chain's TSP uses, so A+UP/DOWN is ±1 octave on both.
             // It was a plain hex_byte with a ±16 large step, which had drifted from the chain.
             CursorContext ctx            = cc::transpose(row.transpose);
             ctx.capabilities.canDelete   = (row.transpose != 0x00);  // deletable back to 00 = no transpose

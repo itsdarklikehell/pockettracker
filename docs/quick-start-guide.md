@@ -61,7 +61,7 @@ Now load the rest of the kit: press **B + RIGHT** to switch to instrument `01`, 
 A **phrase** is a 16-step pattern — one bar of music. Hold **R** and tap LEFT to move from INSTRUMENT to the **PHRASE** screen.
 
 1. With the cursor on step `00`, note column, press **A** — it inserts `C-4` playing instrument `00` (your kick).
-2. Move down to step `04`. Press **A** again, then move right to the **I** column and hold **A + UP** to change the instrument to `01` (snare).
+2. Move down to step `04`. Press **A** again, then move right to the **I** column and hold **A + RIGHT** to change the instrument to `01` (snare).
 3. Fill out a basic boom-bap bar (N = note, I = instrument):
 
    | Step | Note | I | Sound |
@@ -78,7 +78,7 @@ A **phrase** is a 16-step pattern — one bar of music. Hold **R** and tap LEFT 
    Pressing **A** on an empty step repeats the last note you placed — place the first hat, and the rest are two button presses each.
 4. Press **START** — the phrase plays and loops. Edit while it plays; changes are live.
 
-On the note column, **hold A + UP/DOWN** moves in semitones and **A + LEFT/RIGHT** in octaves — that's all you need to turn a copy of this workflow into a bassline or melody later.
+On the note column, **hold A + LEFT/RIGHT** moves in semitones and **A + UP/DOWN** in octaves — that's all you need to turn a copy of this workflow into a bassline or melody later.
 
 ---
 
@@ -94,7 +94,7 @@ SONG  (8 tracks)  →  CHAIN  (list of phrases)  →  PHRASE  (16 steps)
 2. Hold **R** and tap LEFT again to reach the **SONG** screen. Press **A** on track 1, row `00` — it places chain `00`.
 3. Press **START** — the song plays from the top.
 
-That's a complete, playing song structure. Drums on track 1; put a bassline chain on track 2, chords on track 3 — each of the 8 tracks is a column, and every row plays all 8 tracks together.
+That's a complete, playing song structure. Drums on track 1; put a bassline chain on track 2, chords on track 3 — each of the 8 tracks is a column, and all 8 start together when you press START.
 
 ---
 

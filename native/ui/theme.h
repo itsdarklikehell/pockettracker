@@ -38,10 +38,30 @@ struct Theme {
     Argb textCursor = 0xFFFFFF00;  // cursor-highlighted cell (yellow)
     Argb textEmpty  = 0xFF666666;  // empty / placeholder
 
+    // ⚠️ NOT AN INDEPENDENT DEFAULT — `derive_borrowed_colors` computes it, as it does the EQ four
+    // below, and that function is the authority. The literal here is only what a bare `Theme t;`
+    // gets, and it is CLASSIC's own `vizWave`.
+    Argb textSelection = 0xFF00FF00;  // = vizWave — a selected cell's ink
+
     // ── Visualizer (oscilloscope bar) ────────────────────────────────────────────────────────────
     Argb vizBackground = 0xFF0A0A0A;
     Argb vizCenterLine = 0xFF333333;
     Argb vizWave       = 0xFF00FF00;  // waveform line / bar fill
+
+    // ── The EQ editor's spectrum panel ───────────────────────────────────────────────────────────
+    //
+    // Four colours the screen used to BORROW — the panel from vizBackground, the outline and its
+    // shaded fill from textParam, the frequency labels from vizCenterLine. The fill was the one that
+    // hurt: it was `darken(textParam, 0.27f)`, a shade with no key of its own, so a light palette got
+    // a muddy grey wash under its own curve and no row to fix it on.
+    //
+    // ⚠️ THESE VALUES ARE NOT INDEPENDENT DEFAULTS — they are what `derive_borrowed_colors` computes
+    // for the CLASSIC palette, and that function is the authority. Every producer of a Theme runs it;
+    // the literals here are only what a bare `Theme t;` gets, and they are the same four numbers.
+    Argb eqBg     = 0xFF0A0A0A;  // = vizBackground
+    Argb eqFill   = 0xFF222222;  // = darken(textParam, 0.27f)
+    Argb eqBorder = 0xFF808080;  // = textParam
+    Argb eqTxt    = 0xFF333333;  // = vizCenterLine
 
     // ── Mixer dBFS meters ────────────────────────────────────────────────────────────────────────
     Argb meterBackground = 0xFF1A1A1A;
@@ -54,6 +74,44 @@ struct Theme {
     VisualizerType visualizerType = VisualizerType::SCOPE;
 };
 
+/** Multiply the RGB channels by `factor` (0..1 darker, >1 brighter); alpha preserved. Int.darken(). */
+inline Argb darken(Argb c, float factor) {
+    auto ch = [&](int shift) {
+        const int v = static_cast<int>(static_cast<float>((c >> shift) & 0xFF) * factor);
+        return static_cast<Argb>(v < 0 ? 0 : (v > 255 ? 255 : v));
+    };
+    return (c & 0xFF000000u) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+}
+
+// ─── The colours a theme has not named ───────────────────────────────────────────────────────────
+//
+// ⚠️ THESE FIVE KEYS ARE THE ONLY ONES WHOSE DEFAULT IS A FUNCTION OF THE THEME, and it has to be:
+// their default is *what the screen drew before they existed*, which was five other fields of the
+// same palette. A constant default would restyle every `.ptt` already on an SD card the moment it
+// loaded into a build that has these keys — the EQ fill of a light theme would jump from that theme's
+// own shaded param colour to CLASSIC's dark grey, and its selected cells from its own wave colour to
+// CLASSIC's green.
+//
+// So this one function is the authority, and BOTH ends read it: `parse_theme` fills in whichever of
+// the five a file does not carry, and `serialize_theme` omits whichever still equals it. That is the
+// same encodeDefaults=false bargain the other seventeen colours get, with the yardstick derived per
+// theme instead of read off `Theme{}` — and it keeps a saved theme's bytes identical to what an older
+// build wrote until the user actually dials one of these rows.
+//
+// ⚠️ ONE FUNCTION, NOT TWO, AND EVERY SITE CALLS IT LAST. A second derive beside this one is a call
+// every future producer of a Theme has to remember, and the cost of forgetting is a palette that
+// looks right in four screens and wrong in the fifth.
+//
+// 0.27f is the shade the EQ fill was hardcoded to. It stays here and nowhere else.
+inline void derive_borrowed_colors(Theme& t) {
+    t.eqBg     = t.vizBackground;
+    t.eqFill   = darken(t.textParam, 0.27f);
+    t.eqBorder = t.textParam;
+    t.eqTxt    = t.vizCenterLine;
+
+    t.textSelection = t.vizWave;
+}
+
 // ─── The editable colours ────────────────────────────────────────────────────────────────────────
 //
 // The THEME EDITOR's row list — Kotlin's `ThemeEditorModule.COLOR_ROWS`, in the same order, with the
@@ -62,11 +120,15 @@ struct Theme {
 // a bug waiting for someone to add a colour. Three consumers read it (the module draws it, the
 // dispatcher's colour nudge indexes it, and the ptinput golden sweeps it) and none may re-derive it.
 //
-// ⚠️ SEVENTEEN ROWS, EIGHTEEN COLOURS — `meterBorder` HAS NO ROW, AND THAT IS KOTLIN'S. It is a field
-// on the theme, it is serialized into a `.ptt`, it is read by the mixer's meter frames, and there is
-// simply no way to edit it in the UI. Ported as-is rather than "fixed" into a divergence: adding an
-// eighteenth row here would make the C++ editor a superset of the Android one and put a row in the
-// golden that Kotlin cannot produce. (A parity-ledger entry, not a port decision — see docs.)
+// ⚠️ TWENTY-TWO ROWS, TWENTY-THREE COLOURS — `meterBorder` HAS NO ROW. It is a field on the theme, it
+// is serialized into a `.ptt`, it is read by the mixer's meter frames, and there is simply no way to
+// edit it in the UI. Left that way rather than "fixed": it is the one colour whose row would sit in
+// the golden with nothing on either side of it to say what it did.
+//
+// ⚠️ A NEW ROW IS APPENDED, NEVER INSERTED, even when it would read better beside its neighbours. A
+// row's position IS its number to the dispatcher's colour nudge, and the golden records that number
+// in every recorded line — so inserting TXT SELECT next to TXT EMPTY would silently re-point every
+// swept line below it at a different colour.
 //
 // ⚠️ AND IT IS A POINTER-TO-MEMBER, NOT A GET/SET PAIR. Kotlin's row carries two lambdas — `get` and a
 // copy-based `set` — which are two statements of the same fact and can therefore disagree; that is
@@ -98,11 +160,20 @@ inline const std::vector<ThemeColorRow>& theme_color_rows() {
         {"MTR LOW",    &Theme::meterLow},
         {"MTR MID",    &Theme::meterMid},
         {"MTR HIGH",   &Theme::meterHigh},
+        {"EQ BG",      &Theme::eqBg},
+        {"EQ FILL",    &Theme::eqFill},
+        {"EQ BORDER",  &Theme::eqBorder},
+        {"EQ TXT",     &Theme::eqTxt},
+        {"TXT SELECT", &Theme::textSelection},
     };
     return rows;
 }
 
-inline Theme theme_classic() { return Theme{}; }
+inline Theme theme_classic() {
+    Theme t;
+    derive_borrowed_colors(t);
+    return t;
+}
 
 inline Theme theme_amber() {
     Theme t;
@@ -119,6 +190,7 @@ inline Theme theme_amber() {
     t.meterLow      = 0xFFCC8800;
     t.meterMid      = 0xFFCC4400;
     t.meterHigh     = 0xFFCC0000;
+    derive_borrowed_colors(t);   // AFTER the palette — it reads four of the fields set above
     return t;
 }
 
@@ -137,6 +209,7 @@ inline Theme theme_blue() {
     t.meterLow      = 0xFF0088CC;
     t.meterMid      = 0xFF0044CC;
     t.meterHigh     = 0xFF8800CC;
+    derive_borrowed_colors(t);
     return t;
 }
 
@@ -155,6 +228,7 @@ inline Theme theme_mono() {
     t.meterLow      = 0xFFCCCCCC;
     t.meterMid      = 0xFF888888;
     t.meterHigh     = 0xFF444444;
+    derive_borrowed_colors(t);
     return t;
 }
 
@@ -173,7 +247,7 @@ inline std::vector<Theme> theme_builtins() {
 /**
  * The palette and visualizer a first launch comes up in — BLUE with the OCTA bars.
  *
- * ⚠️ Not `Theme{}`. `Theme{}` IS the CLASSIC palette (`theme_classic` returns it unchanged), so moving
+ * ⚠️ Not `Theme{}`. `Theme{}` IS the CLASSIC palette (`theme_classic` returns the field defaults), so moving
  * the app's opening look into the struct's field defaults would redefine one of the four built-ins
  * rather than choose between them. This picks; it does not edit.
  *

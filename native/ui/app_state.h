@@ -17,6 +17,7 @@
 // A new screen adds its fields here; it does not get state of its own.
 
 #include "screen.h"
+#include "table-lanes.h"
 #include "songcore/model.h"
 #include "theme.h"
 #include "ui/folder_config.h"
@@ -29,6 +30,7 @@
 #include "ui/modules/theme_editor.h"
 #include "ui/modules/settings_editor.h"
 #include "ui/platform_caps.h"
+#include "ui/playhead.h"
 #include "ui/selection.h"
 
 #include "songcore/midi_in.h"    // IMidiIn  — the input port (E2); its row is E3's
@@ -146,17 +148,42 @@ struct AppState {
     int currentGroove     = 0;
 
     // ── Playback (read back from songcore's playheads at 60 Hz) ──────────────────────────────────
-    bool isPlaying          = false;
-    int  playbackRow        = 0;  // phrase step, on the PHRASE screen
-    int  playbackChainRow   = 0;
-    int  playbackSongRow    = 0;
+    //
+    // ⚠️ EIGHT, one per track, and −1 where a track has no position at all (ui/playhead.h). There is
+    // no "the playback row": the eight song cursors run independently, so any single number would be
+    // one track's answer wearing the whole song's name.
+    bool          isPlaying    = false;
+    TrackPlayhead playheads[8] = {};
+
+    // ── LIVE mode (SONG's launcher) ──────────────────────────────────────────────────────────────
+    //
+    // ⚠️ A PER-SESSION PERFORMANCE CHOICE — deliberately not in `settings.json` and not in the `.ptp`.
+    // Reopening a project puts you back on the arrangement, which is where editing happens.
+    //
+    // ⚠️ AND THESE ARE A READBACK, NOT THE MODE ITSELF. The sequencer owns it — it is the thing that
+    // has to schedule differently — and both fields are refilled from the host each frame beside the
+    // playheads. The input side asks the host, never this, so there is one answer to "are we live"
+    // and no way for the screen and the transport to disagree about it.
+    bool     liveMode     = false;
+    LiveQueue liveQueue[8] = {};
 
     /**
-     * The TABLE row an engine voice is on — −1 when none is. Unlike the three above, this is not a
-     * sequencer playhead: it is read off the VOICE, because a table advances on its own tic clock
-     * under a note that may outlive the step that started it (ui/engine_feed.h).
+     * The blink phase the queue markers are drawn on, 0..999 ms, written once a frame beside the
+     * playheads.
+     *
+     * ⚠️ IT IS HANDED IN RATHER THAN READ, and that is what keeps a blinking marker drawable by a
+     * tool: `ptshot` has no clock and no engine, so it sets the phase it wants and gets the same
+     * pixels every time. It is the same contract the input dispatcher and the meters are built on.
      */
-    int tablePlaybackRow = -1;
+    int blinkPhaseMs = 0;
+
+    /**
+     * The TABLE row an engine voice is on, ONE PER FX COLUMN — −1 for a column that is not running.
+     * Unlike the eight above, these are not sequencer playheads: they are read off the VOICE,
+     * because a table advances on its own tic clock under a note that may outlive the step that
+     * started it (ui/engine_feed.h), and each of its columns advances on a clock of its own.
+     */
+    int tablePlaybackRows[TABLE_LANES] = {-1, -1, -1};
 
     // ── The note monitor (right bar) ─────────────────────────────────────────────────────────────
     // What each of the 8 tracks is SOUNDING, read from the engine's voice pool rather than from the

@@ -810,15 +810,15 @@ void InputDispatcher::on_dpad_right() {
 
 void InputDispatcher::theme_move_cursor(int d_row, int d_channel) {
     // ⚠️ BOTH AXES WRAP, and neither clamps — which makes this the only cursor in the app that wraps in
-    // BOTH directions. The rows are a ring of eighteen (Kotlin: `if (row > 0) row - 1 else MAX_ROW`)
-    // and the channels a ring of three, and the argument is the mixer's row 0 again: a list of colours
-    // is a ring you scroll, not a document you reach the end of. The panel SCROLLS to follow the row
-    // (only 16 of the 18 fit), so wrapping from row 17 to row 0 also scrolls the list back to the top.
+    // BOTH directions. The rows are the THEME row plus one per colour, the channels a ring of three,
+    // and the argument is the mixer's row 0 again: a list of colours is a ring you scroll, not a
+    // document you reach the end of. The panel SCROLLS to follow the row (only 16 rows fit), so
+    // wrapping from the last row to row 0 also scrolls the list back to the top.
     if (d_row != 0) {
         const int row = s_.themeEditor.cursorRow;
-        s_.themeEditor.cursorRow =
-            (d_row < 0) ? (row > 0 ? row - 1 : ThemeEditorModule::MAX_ROW)
-                        : (row < ThemeEditorModule::MAX_ROW ? row + 1 : 0);
+        const int max = ThemeEditorModule::max_row();
+        s_.themeEditor.cursorRow = (d_row < 0) ? (row > 0 ? row - 1 : max)
+                                               : (row < max ? row + 1 : 0);
     }
     if (d_channel != 0) {
         const int ch = s_.themeEditor.cursorChannel;
@@ -895,7 +895,7 @@ void InputDispatcher::save_theme_as(const std::string& dir, const std::string& t
     // save your palette as SUNSET and the THEME row still reads CLASSIC. It is cosmetic — the FILE is
     // correct, and loading it back does set the name — and it is left alone rather than "fixed", because
     // the name is what the built-in cycle keys off (`theme_cycle_builtin`) and adopting a custom name
-    // would silently change which palette A+DOWN lands on. A divergence with a behavioural tail is not a
+    // would silently change which palette A+RIGHT lands on. A divergence with a behavioural tail is not a
     // tidy-up. Stated here rather than smuggled in; a parity-ledger entry, not a port decision.
     const bool ok = save_theme_file(fs_, path, to_save);
 
@@ -982,21 +982,25 @@ void InputDispatcher::apply_fx_type_change(int effect_code) {
 
 // ─── A + D-pad ───────────────────────────────────────────────────────────────────────────────────
 
-// ⚠️ The three methods below share a NAME with the free cursor.h handlers they call
-// (`on_a_left` / `on_a_right` / `on_a_b`), and inside a member function unqualified lookup finds the
-// MEMBER first — `selection_or_single(on_a_left)` would try to pass the method to itself. The
-// `pt::ui::` qualification forces namespace-scope lookup and is load-bearing, not decoration.
+// ⚠️ `on_a_b` below shares a NAME with the free cursor.h handler it calls, and inside a member
+// function unqualified lookup finds the MEMBER first — `generic_input(on_a_b)` would try to pass the
+// method to itself. The `pt::ui::` qualification forces namespace-scope lookup and is load-bearing,
+// not decoration. The other four free handlers are named for the STEP (`increment` / `decrement` /
+// `increment_fast` / `decrement_fast`), so nothing shadows them — but they are qualified alongside
+// `on_a_b` so the four arms of one gesture read the same way.
 //
-// The names are worth the qualification: the free ones are S1's, they are goldened by `ptinput`, and
-// they mirror Kotlin's `InputController.handleALeft`; the methods mirror `ButtonHandlers.onALeft`.
-// Both sets are named after what they are, and both names are right.
+// ⚠️ WHICH CHORD FIRES WHICH STEP IS THE SPECIFICATION, and it follows LGPT: the D-pad's HORIZONTAL
+// axis is the small step and the VERTICAL axis the large one. A+RIGHT/A+LEFT is ±1, A+UP/A+DOWN is
+// ±`largeStep`. Everything a screen overrides below keeps that split — the sample editor's fine and
+// coarse nudges, the theme editor's ±0x01 and ±0x10, the INSTRUMENT TYPE cycle (a ±1, so horizontal).
+// The one gesture that is not a step at all, the FX picker, stays on the vertical axis.
 
 /**
- * A+UP/DOWN on the INSTRUMENT screen's TYPE cell. Switching a slot's type FREES whatever source it
+ * A+LEFT/RIGHT on the INSTRUMENT screen's TYPE cell. Switching a slot's type FREES whatever source it
  * holds — a sampler has no use for an .sf2 and vice versa — so a loaded slot is asked about through
  * the confirm dialog first, and only an EMPTY slot switches outright.
  *
- * ⚠️ Silently dropping a loaded sample because the user nudged A+UP one row too far is the failure
+ * ⚠️ Silently dropping a loaded sample because the user nudged A+RIGHT one cell too far is the failure
  * this shape exists to prevent. The dialog is the guard; do not add a path around it.
  */
 void InputDispatcher::request_instrument_type_toggle(int delta) {
@@ -1013,7 +1017,7 @@ void InputDispatcher::request_instrument_type_toggle(int delta) {
 /**
  * Step the TYPE cell by `delta`, wrapping through the types this build offers.
  *
- * A+UP and A+DOWN have to disagree about direction or a cell with three stops can only ever be walked
+ * A+RIGHT and A+LEFT have to disagree about direction or a cell with three stops can only ever be walked
  * forwards. The cycle runs on a COUNT rather than a chain of ternaries, so a fourth type joins it by
  * existing.
  *
@@ -1046,7 +1050,7 @@ void InputDispatcher::toggle_instrument_type(int delta) {
     s_.statusSuccess = true;
 }
 
-/** True when the cursor is on INSTRUMENT's TYPE cell, the one A+UP/DOWN does not merely increment. */
+/** True when the cursor is on INSTRUMENT's TYPE cell, the one A+LEFT/RIGHT does not merely increment. */
 bool InputDispatcher::on_instrument_type_cell() const {
     return s_.currentScreen == ScreenType::INSTRUMENT && s_.instrumentCursorRow == 0 &&
            s_.instrumentCursorColumn == 1;
@@ -1057,9 +1061,9 @@ bool InputDispatcher::on_instrument_type_cell() const {
 // down over a browser must not reach the editor screen underneath it.
 
 // ⚠️ On the SAMPLE EDITOR, A+DPAD on rows 3..8 does not step a cell — it DRAGS the selection's active
-// edge (START on col 0, END on col 1). UP/DOWN are the fine step and LEFT/RIGHT the coarse one, both
+// edge (START on col 0, END on col 1). LEFT/RIGHT are the fine step and UP/DOWN the coarse one, both
 // scaled by the ZOOM, so a nudge is always about a pixel's worth of the waveform you can actually see:
-// zoomed out, LEFT moves a sixteenth of the sample; zoomed to 16×, it moves a sixteenth of the WINDOW.
+// zoomed out, UP moves a sixteenth of the sample; zoomed to 16×, it moves a sixteenth of the WINDOW.
 //
 // This is checked ahead of the FX helper's column test and the instrument TYPE cell, exactly where
 // Kotlin checks it, because neither of those exists on this screen.
@@ -1079,88 +1083,81 @@ static int64_t sample_coarse_step(const SampleEditorState& se) {
 // `generic_input()` carries the real arm; these five make sure nothing gets in front of it.
 
 // ⚠️ THE THEME ARM COMES FIRST IN ALL FOUR, and it is where the editor's whole edit lives — the module
-// has no `handle_input` and no CursorContext (see generic_input). The four gestures are not symmetric,
-// and the asymmetry is Kotlin's:
+// has no `handle_input` and no CursorContext (see generic_input). The four gestures are not symmetric:
 //
-//   A+UP   / A+DOWN  → on the THEME row, step the BUILT-IN palette (prev / next).
-//                      on a colour row, nudge the cursor's channel by ±0x01.
-//   A+LEFT / A+RIGHT → on the THEME row, NOTHING (`if (cursorRow >= 1)` — there is no coarse step for a
+//   A+LEFT / A+RIGHT → on the THEME row, step the BUILT-IN palette (prev / next).
+//                      on a colour row, nudge the cursor's channel by ∓0x01.
+//   A+UP   / A+DOWN  → on the THEME row, NOTHING (`if (cursorRow >= 1)` — there is no coarse step for a
 //                      palette, and no fifth thing for a name to do).
-//                      on a colour row, nudge the cursor's channel by ∓0x10.
-//
-// ⚠️ Note which way round the palette cycle runs: A+UP is PREV and A+DOWN is NEXT, the opposite of the
-// ±1 the same two buttons apply to a colour one row below. It reads as a bug and is not: UP walks the
-// list UP (towards CLASSIC), and the colour nudge is a NUMBER going up. Two different meanings for one
-// button, decided by the row — reproduced rather than "fixed", because a user's muscle memory for
-// "A+DOWN gives me the next theme" is the phone's.
+//                      on a colour row, nudge the cursor's channel by ±0x10.
 
 void InputDispatcher::on_a_up() {
     if (overlay_swallows(Overlay::THEME | Overlay::EQ | Overlay::FX_HELPER)) return;
     if (theme_open()) {
-        if (s_.themeEditor.cursorRow == 0) theme_cycle_builtin(s_.theme, -1);
-        else theme_adjust_color(s_.theme, s_.themeEditor.cursorRow,
-                                s_.themeEditor.cursorChannel, +0x01);
+        // Row 0 falls through to nothing: `theme_adjust_color` rejects it, as the coarse arm must.
+        theme_adjust_color(s_.theme, s_.themeEditor.cursorRow, s_.themeEditor.cursorChannel, +0x10);
         return;
     }
-    if (eq_open()) { generic_input(pt::ui::on_a); return; }
+    if (eq_open()) { generic_input(pt::ui::increment_fast); return; }
     if (s_.fxHelper.isOpen) { fx_move_up(s_.fxHelper); return; }
-    if (on_sample_selection_row()) { nudge_selection_edge(+sample_fine_step(s_.sampleEditor)); return; }
-    if (on_sample_slice_marker_row()) { nudge_slice_marker(+sample_fine_step(s_.sampleEditor)); return; }
+    if (on_sample_selection_row()) { nudge_selection_edge(+sample_coarse_step(s_.sampleEditor)); return; }
+    if (on_sample_slice_marker_row()) { nudge_slice_marker(+sample_coarse_step(s_.sampleEditor)); return; }
     if (on_fx_type_column()) {
         s_.fxHelper = fx_helper_opened_at(current_fx_type_index(),
                                           FxGrid::of(visible_effect_type_count()));
         return;
     }
-    if (on_instrument_type_cell()) { request_instrument_type_toggle(+1); return; }
-    selection_or_single(pt::ui::on_a);
+    selection_or_single(pt::ui::increment_fast);
 }
 
 void InputDispatcher::on_a_down() {
     if (overlay_swallows(Overlay::THEME | Overlay::EQ | Overlay::FX_HELPER)) return;
     if (theme_open()) {
-        if (s_.themeEditor.cursorRow == 0) theme_cycle_builtin(s_.theme, +1);
-        else theme_adjust_color(s_.theme, s_.themeEditor.cursorRow,
-                                s_.themeEditor.cursorChannel, -0x01);
+        theme_adjust_color(s_.theme, s_.themeEditor.cursorRow, s_.themeEditor.cursorChannel, -0x10);
         return;
     }
-    if (eq_open()) { generic_input(pt::ui::on_b); return; }
+    if (eq_open()) { generic_input(pt::ui::decrement_fast); return; }
     if (s_.fxHelper.isOpen) { fx_move_down(s_.fxHelper); return; }
-    if (on_sample_selection_row()) { nudge_selection_edge(-sample_fine_step(s_.sampleEditor)); return; }
-    if (on_sample_slice_marker_row()) { nudge_slice_marker(-sample_fine_step(s_.sampleEditor)); return; }
+    if (on_sample_selection_row()) { nudge_selection_edge(-sample_coarse_step(s_.sampleEditor)); return; }
+    if (on_sample_slice_marker_row()) { nudge_slice_marker(-sample_coarse_step(s_.sampleEditor)); return; }
     if (on_fx_type_column()) {
         s_.fxHelper = fx_helper_opened_at(current_fx_type_index(),
                                           FxGrid::of(visible_effect_type_count()));
         return;
     }
-    if (on_instrument_type_cell()) { request_instrument_type_toggle(-1); return; }
-    selection_or_single(pt::ui::on_b);   // A+DOWN DECREMENTS — `on_b` is the generic "step down"
+    selection_or_single(pt::ui::decrement_fast);
 }
 
 void InputDispatcher::on_a_left() {
     if (overlay_swallows(Overlay::THEME | Overlay::EQ | Overlay::FX_HELPER)) return;
     if (theme_open()) {
-        // Row 0 falls through to nothing: `theme_adjust_color` rejects it, as Kotlin's `>= 1` guard does.
-        theme_adjust_color(s_.theme, s_.themeEditor.cursorRow, s_.themeEditor.cursorChannel, -0x10);
+        if (s_.themeEditor.cursorRow == 0) theme_cycle_builtin(s_.theme, -1);
+        else theme_adjust_color(s_.theme, s_.themeEditor.cursorRow,
+                                s_.themeEditor.cursorChannel, -0x01);
         return;
     }
-    if (eq_open()) { generic_input(pt::ui::on_a_left); return; }
+    if (eq_open()) { generic_input(pt::ui::decrement); return; }
     if (s_.fxHelper.isOpen) { fx_move_left(s_.fxHelper); return; }
-    if (on_sample_selection_row()) { nudge_selection_edge(-sample_coarse_step(s_.sampleEditor)); return; }
-    if (on_sample_slice_marker_row()) { nudge_slice_marker(-sample_coarse_step(s_.sampleEditor)); return; }
-    selection_or_single(pt::ui::on_a_left);
+    if (on_sample_selection_row()) { nudge_selection_edge(-sample_fine_step(s_.sampleEditor)); return; }
+    if (on_sample_slice_marker_row()) { nudge_slice_marker(-sample_fine_step(s_.sampleEditor)); return; }
+    if (on_instrument_type_cell()) { request_instrument_type_toggle(-1); return; }
+    selection_or_single(pt::ui::decrement);
 }
 
 void InputDispatcher::on_a_right() {
     if (overlay_swallows(Overlay::THEME | Overlay::EQ | Overlay::FX_HELPER)) return;
     if (theme_open()) {
-        theme_adjust_color(s_.theme, s_.themeEditor.cursorRow, s_.themeEditor.cursorChannel, +0x10);
+        if (s_.themeEditor.cursorRow == 0) theme_cycle_builtin(s_.theme, +1);
+        else theme_adjust_color(s_.theme, s_.themeEditor.cursorRow,
+                                s_.themeEditor.cursorChannel, +0x01);
         return;
     }
-    if (eq_open()) { generic_input(pt::ui::on_a_right); return; }
+    if (eq_open()) { generic_input(pt::ui::increment); return; }
     if (s_.fxHelper.isOpen) { fx_move_right(s_.fxHelper); return; }
-    if (on_sample_selection_row()) { nudge_selection_edge(+sample_coarse_step(s_.sampleEditor)); return; }
-    if (on_sample_slice_marker_row()) { nudge_slice_marker(+sample_coarse_step(s_.sampleEditor)); return; }
-    selection_or_single(pt::ui::on_a_right);
+    if (on_sample_selection_row()) { nudge_selection_edge(+sample_fine_step(s_.sampleEditor)); return; }
+    if (on_sample_slice_marker_row()) { nudge_slice_marker(+sample_fine_step(s_.sampleEditor)); return; }
+    if (on_instrument_type_cell()) { request_instrument_type_toggle(+1); return; }
+    selection_or_single(pt::ui::increment);
 }
 
 void InputDispatcher::on_a_released() {
@@ -1345,7 +1342,7 @@ void InputDispatcher::on_a_a() {
 void InputDispatcher::cycle_current_item(int delta) {
     // ⚠️ The THEME editor SWALLOWS B+LEFT/RIGHT rather than doing anything with it (Kotlin's
     // `cycleCurrentItem` opens with the same line). It is not that there is nothing sensible to cycle —
-    // B+LEFT/RIGHT could plausibly walk the built-in palettes — it is that A+UP/A+DOWN already does, and
+    // B+LEFT/RIGHT could plausibly walk the built-in palettes — it is that A+LEFT/A+RIGHT already does, and
     // a second gesture for one job is a second thing to keep in step. Without this arm the press would
     // fall through to `currentScreen`, which is SETTINGS, whose `default:` arm does nothing — so the bug
     // would be invisible today and would arrive the day an EQ cell or a pool lands on SETTINGS.
@@ -1359,6 +1356,19 @@ void InputDispatcher::cycle_current_item(int delta) {
         const int newSlot = std::min(127, std::max(0, s_.eq.slotIndex + delta));
         s_.eq.slotIndex   = newSlot;
         apply_caller_eq_slot_change(newSlot);
+        return;
+    }
+
+    // ⭐ ON SONG, B+LEFT/RIGHT TOGGLES THE TRANSPORT MODE — LGPT's own gesture, ported literally
+    // because it was free here: the NAV=SONG arm below is gated on CHAIN and PHRASE, and the pool
+    // switch under it has no SONG case, so this press has always reached `default: break;` and done
+    // nothing. LEFT and RIGHT both toggle rather than one each: there are two modes, so a direction
+    // that could only ever confirm the mode you are already in would be a button that does nothing.
+    //
+    // ⚠️ GATED ON SONG ALONE. The handler is shared: an ungated arm would swallow the pool cycle on
+    // six screens and the song-relative walk on two.
+    if (s_.currentScreen == ScreenType::SONG) {
+        host_.set_live_mode(!host_.live_mode());
         return;
     }
 
@@ -2125,7 +2135,7 @@ void InputDispatcher::confirm_accept() {
     const ConfirmDialogState::Kind kind = s_.confirm.kind;
     // ⚠️ `arg` is read out HERE, beside the kind, because `close()` resets it — and it is the direction
     // the CHANGE_TYPE arm below needs. Reading it after the close would have silently turned every
-    // confirmed A+DOWN into an A+UP, which is a wrong answer that still looks like the cell working.
+    // confirmed A+LEFT into an A+RIGHT, which is a wrong answer that still looks like the cell working.
     const int argv = s_.confirm.arg;
     s_.confirm.close();   // FIRST — every arm below can re-open a dialog, and none should be stacked
 
@@ -2163,9 +2173,9 @@ void InputDispatcher::confirm_accept() {
             // ask first. This is that dialog. `toggle_instrument_type` is unchanged; what changed is
             // that it can now be reached destructively, having asked.
             //
-            // ⚠️ The DIRECTION comes back out of the dialog (`arg`), not from a default: A+DOWN on a
+            // ⚠️ The DIRECTION comes back out of the dialog (`arg`), not from a default: A+LEFT on a
             // loaded slot must still step backwards after the user says yes, and with three types
-            // that is a different answer from A+UP's.
+            // that is a different answer from A+RIGHT's.
             toggle_instrument_type(argv);
             break;
 
@@ -3236,6 +3246,31 @@ void InputDispatcher::on_start() {
         return;
     }
 
+    // ⚠️ **IN LIVE MODE, START ON SONG IS NOT THE TRANSPORT AT ALL — IT QUEUES.** It sits ahead of the
+    // play/stop toggle rather than inside it because that is the whole difference between the two
+    // modes: here the button launches the cell under the cursor, and stopping is R+START for one
+    // channel or the STOP button for everything.
+    if (live_song_gesture()) {
+        const int track = s_.cursorColumn - 1;   // on SONG the cursor column IS the track, 1-based
+        if (!host_.is_playing()) {
+            // Nothing is running, so there is no boundary to wait for: this channel starts NOW and
+            // the transport starts with it. The other seven begin silent, waiting to be launched.
+            host_.play_song_live(s_.cursorRow, 1 << track);
+            return;
+        }
+        // ⭐ LGPT's two-press launch, and it needs no second chord and no state of its own: the first
+        // press queues for the end of the playing chain, and a second on the SAME cell promotes that
+        // queue to the next phrase boundary. The slot already says which press this is.
+        //
+        // ⚠️ **ONLY WHILE IT IS STILL ARMED.** A launch the sequencer has already committed to a frame
+        // goes on showing as queued until it is heard, which is right for the marker and wrong here:
+        // promoting it then pulls it earlier and cuts short a chain the player is still listening to.
+        const songcore::LiveSlot q = host_.live_queue(track);
+        const bool               immediate = q.armed() && !q.stop && q.targetRow == s_.cursorRow;
+        host_.queue_live(track, s_.cursorRow, immediate);
+        return;
+    }
+
     // Everywhere else START is the transport.
     if (host_.is_playing()) {
         host_.stop();
@@ -3281,6 +3316,55 @@ void InputDispatcher::on_start() {
                                                         remembered_song_track()));
             break;
     }
+}
+
+// ─── LIVE mode's two chords ──────────────────────────────────────────────────────────────────────
+//
+// ⚠️ **BOTH ARE RESERVED CHORDS TAKING ON A MEANING, NOT NEW ONES.** `button_mapper.h` has consumed
+// L+START and R+START since the matrix was written — *"reserved — START must not toggle playback
+// here"* — so on every screen but SONG, and in every mode but LIVE, they still do exactly nothing.
+// The gate is what keeps that true: the mapper's two arms are GLOBAL, so without it L+START would
+// queue a song row from inside the sample editor.
+
+int InputDispatcher::live_row_mask(int songRow) const {
+    int mask = 0;
+    for (int t = 0; t < 8; ++t) {
+        // chainRefs is a GROWING list, so a row past a track's end is empty rather than out of bounds.
+        const std::vector<int>& refs = s_.project->tracks[static_cast<size_t>(t)].chainRefs;
+        const int chainId = (songRow >= 0 && songRow < static_cast<int>(refs.size()))
+                                ? refs[static_cast<size_t>(songRow)] : -1;
+        if (chainId >= 0 && chainId < 256) mask |= 1 << t;
+    }
+    return mask;
+}
+
+bool InputDispatcher::live_row_armed(int songRow) const {
+    for (int t = 0; t < 8; ++t) {
+        const songcore::LiveSlot q = host_.live_queue(t);
+        if (!q.stop && q.targetRow == songRow) return true;
+    }
+    return false;
+}
+
+void InputDispatcher::on_l_start() {
+    if (!live_song_gesture()) return;
+    if (!host_.is_playing()) {
+        // From a standing start the whole row launches together, on one downbeat. A cell with no
+        // chain in it starts silent — the row sounds the way it looks.
+        host_.play_song_live(s_.cursorRow, live_row_mask(s_.cursorRow));
+        return;
+    }
+    host_.queue_live_row(s_.cursorRow, live_row_armed(s_.cursorRow));
+}
+
+void InputDispatcher::on_r_start() {
+    if (!live_song_gesture()) return;
+    if (!host_.is_playing()) return;   // nothing is sounding, so there is nothing to queue a stop for
+    const int track = s_.cursorColumn - 1;
+    // The same two-press promotion the launch has: queued for the chain end, pressed again for the
+    // next phrase boundary.
+    const songcore::LiveSlot sq = host_.live_queue(track);
+    host_.queue_live_stop(track, sq.armed() && sq.stop);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -4949,7 +5033,7 @@ bool InputDispatcher::open_sub_screen_at_cursor(bool peek) {
     switch (s_.currentScreen) {
         case ScreenType::PROJECT:
             // The NAME row, any column but the label. Its characters are cursor COLUMNS, each an
-            // in-place CHARACTER cell — so on ONE cell A opens the keyboard, A+UP walks that character
+            // in-place CHARACTER cell — so on ONE cell A opens the keyboard, A+RIGHT walks that character
             // through the alphabet, and A+B blanks it. The sharpest case the defer latch exists for.
             if (s_.projectCursorRow == static_cast<int>(ProjectRow::NAME) &&
                 s_.projectCursorColumn >= 1) {

@@ -265,10 +265,10 @@ Hold **A** and press a direction to edit the value under the cursor:
 
 | Combo | Step |
 |---|---|
-| A + UP | +1 (small step) |
-| A + DOWN | −1 (small step) |
-| A + RIGHT | +16 / +1 octave (large step) |
-| A + LEFT | −16 / −1 octave (large step) |
+| A + RIGHT | +1 (small step) |
+| A + LEFT | −1 (small step) |
+| A + UP | +16 / +1 octave (large step) |
+| A + DOWN | −16 / −1 octave (large step) |
 | A + B | Delete / clear value |
 
 - **Key repeat is active:** hold the combo for ~400 ms and it starts repeating at ~10/s.
@@ -332,7 +332,7 @@ Works on PHRASE, CHAIN, SONG, and TABLE screens.
 | L + B + A | Deep-clone the chain or phrase under the cursor into the next free slot |
 | L + R | Leave selection mode (nothing copied) |
 
-**Selection increment:** In selection mode, **A + UP/DOWN** increments or decrements all selected values simultaneously.
+**Selection increment:** In selection mode, **A + LEFT/RIGHT** increments or decrements all selected values simultaneously.
 
 **Clearing the clipboard:** the copy buffer deliberately survives leaving a selection — you can select
 again by accident without losing what you copied. Press **L + R** when you are *not* selecting to clear
@@ -391,6 +391,7 @@ MIXER — so soloing one track dims the other seven.
 | START on PHRASE | Play current phrase (loops) |
 | START on INSTRUMENT | Preview current instrument |
 | START on SAMPLE EDITOR | Preview edited sample |
+| START on SONG in LIVE mode | Queue the chain under the cursor ([LIVE Mode](#live-mode)) |
 
 ---
 
@@ -409,7 +410,7 @@ PROJECT
 - A **STEP** is a single note event with optional effects.
 - A **PHRASE** is a short pattern of 16 steps — like a bar of music.
 - A **CHAIN** is a sequence of up to 16 phrases. Each phrase slot can have a **transpose** value to shift pitch without duplicating the phrase.
-- The **SONG** arranges chains across 8 tracks. Each song row plays all 8 tracks simultaneously.
+- The **SONG** arranges chains across 8 tracks. All 8 start together on the row you press START from, and each then moves down its own column as its own chains end.
 
 All values (chain IDs, phrase IDs, instrument IDs, etc.) are hexadecimal, ranging from `00` to `FF`.
 
@@ -431,20 +432,45 @@ The SONG screen arranges chains across 8 tracks. Each column is a track (1–8),
 
 `--` means the track is silent at that position. Numbers are chain IDs (hex).
 
+During playback a `>` appears to the left of the cell each track is on. The eight move independently, so they are rarely all on the same row.
+
+A `>` also marks the playing row on the CHAIN and PHRASE screens. It is only drawn where the screen is showing something that is actually playing — audition a phrase on its own and the chain and song screens stay unmarked, because that phrase need not belong to any chain.
+
 ### Controls
 
 | Input | Action |
 |---|---|
 | D-pad | Move cursor |
 | A | Insert last-used chain ID |
-| A + UP/DOWN | Increment / decrement chain ID |
-| A + LEFT/RIGHT | Increment / decrement by 16 |
+| A + LEFT/RIGHT | Increment / decrement chain ID |
+| A + UP/DOWN | Increment / decrement by 16 |
 | A + B | Delete (set to --) |
 | B + UP/DOWN | Page up / down (jump 16 rows) |
+| B + LEFT/RIGHT | Switch between SONG and LIVE mode |
 | START | Play song from current row |
 
 > [!TIP]
 > You can start playback from any row — not just the beginning. Move the cursor to the row where you want playback to start, then press **START**. Useful for jumping to a specific section while mixing.
+
+### LIVE Mode
+
+Press **B + LEFT** or **B + RIGHT** on the SONG screen to switch between the two transport modes. The title changes from `SONG:` to `LIVE:`.
+
+In LIVE mode the song grid is a scene launcher. Each channel plays one chain and repeats it until you queue something else, and START no longer starts or stops the transport — it queues.
+
+| Input | Action |
+|---|---|
+| START | Queue the chain under the cursor on that channel |
+| START again on the same cell | Start it at the next bar instead of waiting for the chain |
+| L + START | Queue the whole cursor row — every channel at once |
+| R + START | Queue the channel under the cursor to fall silent |
+| B + LEFT/RIGHT | Back to SONG mode |
+
+A queued launch blinks a `>` on the row it will jump to, while the solid `>` stays where the channel is now. A queued stop blinks a `_` in place of the channel's marker. Slow blink means it is waiting for the chain to end; fast blink means the next bar.
+
+A blank cell in a queued row silences that channel, so a row sounds the way it looks. With the transport stopped, START and L+START begin playing immediately.
+
+Switching modes never jumps or silences anything: each channel keeps its place, and starts repeating — or resumes walking down its column — from its next chain boundary. LIVE mode lasts for the session and is not saved with the project.
 
 ---
 
@@ -470,8 +496,8 @@ When played, the chain loops from slot 00 after the last filled slot.
 |---|---|
 | D-pad | Move cursor |
 | A | Insert last-used value |
-| A + UP/DOWN | Increment / decrement |
-| A + LEFT/RIGHT | ±16 (PH) or ±12 semitones (TSP) |
+| A + LEFT/RIGHT | Increment / decrement |
+| A + UP/DOWN | ±16 (PH) or ±12 semitones (TSP) |
 | A + B | Delete slot |
 | B + LEFT/RIGHT | Switch to previous / next chain |
 | START | Play current chain |
@@ -507,15 +533,15 @@ Notes are written as pitch + octave: `C-4`, `C#4`, `D-4`, … `G-9`. Range is **
 |---|---|
 | D-pad | Move cursor |
 | A | Insert last-used note / value |
-| A + UP/DOWN | +1 / −1 semitone (note), +1 / −1 (other values) |
-| A + LEFT/RIGHT | ±1 octave (note), ±16 (other values) |
+| A + LEFT/RIGHT | +1 / −1 semitone (note), +1 / −1 (other values) |
+| A + UP/DOWN | ±1 octave (note), ±16 (other values) |
 | A + B | Delete value at cursor |
 | B + LEFT/RIGHT | Switch to previous / next phrase |
 | START | Play current phrase (loops) |
 
 ### FX columns
 
-Each FX slot has two parts: **type** (3-letter code) and **value** (2-digit hex). Use A+UP/DOWN on the type to cycle through available effects. Effects are listed in §21.
+Each FX slot has two parts: **type** (3-letter code) and **value** (2-digit hex). Use A+LEFT/RIGHT on the type to step through the available effects one at a time, or A+UP/DOWN to open the effect picker and choose from the grid. Effects are listed in §21.
 
 > [!WARNING]
 > Some effects (**ARP**, **RPT**, **PBN**, **PVB**, **PVX**) **persist across steps that have no note** — they keep running on empty rows. They are cancelled by: a new note on the same track, any effect in the same FX column, setting the effect to `00`, or **KIL**.
@@ -558,7 +584,7 @@ Navigate here with **R+RIGHT** from PHRASE. Use **B+LEFT/RIGHT** to switch betwe
 | RES | 00–FF | Filter resonance. `00` = none. |
 | DRIVE | 00–FF | Soft-clipping overdrive. `00` = off. |
 | CRUSH | 00–FF | Bit-depth crusher. `00` = off. |
-| EQ | — | Press A (or SELECT) to open the EQ EDITOR for this instrument. A + UP/DOWN picks the EQ slot. |
+| EQ | — | Press A (or SELECT) to open the EQ EDITOR for this instrument. A + LEFT/RIGHT picks the EQ slot. |
 
 > [!TIP]
 > **ROOT** is the most important tuning parameter. Set it to the actual pitch of your sample (e.g., `A-4` for a 440 Hz sine). If notes sound in the wrong octave, ROOT is usually the reason.
@@ -684,7 +710,7 @@ Move the selection start and end markers to define a region for operations.
 | Input | Action |
 |---|---|
 | D-pad (on start/end marker row) | Move the active marker |
-| A + LEFT/RIGHT | Jump marker by large step |
+| A + UP/DOWN | Jump marker by large step |
 
 ### Non-destructive parameters
 
@@ -771,8 +797,8 @@ where a plain A makes a new boundary.
 
 | Input | Action |
 |---|---|
-| A + UP/DOWN | Move the boundary by a fine step |
-| A + LEFT/RIGHT | Move it by a coarse step |
+| A + LEFT/RIGHT | Move the boundary by a fine step |
+| A + UP/DOWN | Move it by a coarse step |
 | A + B | MANUAL: delete it. TRANSIENT / DIVIDE: put it back where the mode had placed it |
 | A *(while the sample plays)* | MANUAL: cut a boundary at the playhead |
 
@@ -839,6 +865,33 @@ loops a section of it as usual, and PLAY, STOP and a render each start again fro
 > [!NOTE]
 > By default, instrument N uses table N. To override this per-note, place a **TBL XX** effect in the phrase FX column. The table switches immediately and stays active for subsequent notes on that track.
 
+### Three playheads
+
+Each FX column runs at its own speed and loops independently. There are three playheads, marked by a
+`>` before each FX column. The FX1 playhead carries the N and VOL columns too, so it is also shown
+beside the row number.
+
+- **`HOP` steers only the column it is written in.** `HOP 00` in FX2 loops FX2 while N, VOL and FX1
+  keep walking all sixteen rows.
+- **`TIC` sets only that column's speed.** Write it in a column's last row to set that column's rate
+  for the whole table, or anywhere else to change it as the playhead passes.
+- **`HOP FF` stops only its own column.** The table ends when all three have stopped.
+
+```
+     N    VOL  FX1      FX2      FX3
+00   00   --   CUT 40   ---  00   ---  00
+01   00   --   CUT 60   HOP 00   ---  00   ← FX2 loops rows 00-01 for ever
+…
+0F   00   --   ---  00  TIC 03   ---  00   ← …twice as fast as everything else
+```
+
+Two columns at different rates give you cross-rhythms out of a single table — a filter moving in
+threes under a volume moving in fours.
+
+> [!NOTE]
+> `THO` written in a **phrase** moves all three playheads, since it belongs to no column. `THO` inside
+> the table moves the column it is typed in.
+
 ### Fades in a table
 
 `AUS` and `AUF` work on a table row as they do on a phrase step (§21), with **rows** as the span:
@@ -850,9 +903,10 @@ loops a section of it as usual, and PLAY, STOP and a render each start again fro
 ```
 
 A table `AUS` can move **VOL**, **CUT**, **RES**, **EQN** and **EQM**; anything else to its left is
-passed over. The fade follows the row the table is on, so **HOP steers it** — back to the `AUS` row
-restarts it, into the middle picks it up there, past the `AUF` ends it. A `TIC` change stretches it
-along with the rest of the table.
+passed over. The fade follows the playhead of the column holding the value it is moving — `CUT` in
+FX1 above, so that fade runs at FX1's speed whichever column the `AUS` sits in. **HOP steers it** —
+back to the `AUS` row restarts it, into the middle picks it up there, past the `AUF` ends it. A `TIC`
+change stretches it along with the rest of that column.
 
 ⚠️ A span never wraps past row `0F`: write the `AUF` on a later row than the `AUS`.
 
@@ -865,7 +919,7 @@ By default, instrument N uses table N. Override per-note with the **TBL** phrase
 | Input | Action |
 |---|---|
 | D-pad | Move cursor |
-| A + UP/DOWN | Edit value |
+| A + LEFT/RIGHT | Edit value |
 | A + B | Delete value |
 | B + LEFT/RIGHT | Previous / next table |
 | L + B / copy / paste | Selection, copy, paste (same as phrase) |
@@ -922,8 +976,8 @@ Each track uses groove `00` by default. Use the **GRV XX** phrase effect to swit
 | Input | Action |
 |---|---|
 | D-pad UP/DOWN | Move between rows |
-| A + UP/DOWN | Edit tick value |
-| A + LEFT/RIGHT | Edit tick value (large step) |
+| A + LEFT/RIGHT | Edit tick value |
+| A + UP/DOWN | Edit tick value (large step) |
 | A + B | Clear row |
 | B + LEFT/RIGHT | Previous / next groove |
 
@@ -997,8 +1051,8 @@ Example: MOD1 (LFO) with DEST=MOD AMT targeting MOD2 (AHD) — the LFO rhythmica
 |---|---|
 | D-pad UP/DOWN | Move between parameters |
 | D-pad LEFT/RIGHT | Switch between paired slots (MOD1↔MOD2 or MOD3↔MOD4) |
-| A + UP/DOWN | Edit value |
-| A + LEFT/RIGHT | Edit value (large step) |
+| A + LEFT/RIGHT | Edit value |
+| A + UP/DOWN | Edit value (large step) |
 | A + B | Reset to default |
 | B + LEFT/RIGHT | Previous / next instrument |
 
@@ -1062,9 +1116,9 @@ The master column also has stereo send peak meters showing REV and DEL bus level
 |---|---|
 | D-pad LEFT/RIGHT | Select track / column |
 | D-pad UP/DOWN | Move between rows (track volume, or REV/DEL/VOL in master) |
-| A + UP/DOWN | Increase / decrease value by 1 |
-| A + LEFT/RIGHT | Increase / decrease value by 16 |
-| A or SELECT (on the master EQ cell) | Open EQ EDITOR. A + UP/DOWN picks the EQ slot. |
+| A + LEFT/RIGHT | Increase / decrease value by 1 |
+| A + UP/DOWN | Increase / decrease value by 16 |
+| A or SELECT (on the master EQ cell) | Open EQ EDITOR. A + LEFT/RIGHT picks the EQ slot. |
 
 ---
 
@@ -1131,7 +1185,7 @@ Each band has 4 parameters: TYPE, FREQ, GAIN, Q.
 | Param | Range | Unit | Notes |
 |---|---|---|---|
 | TYPE | — | — | Band shape (see table below). |
-| FREQ | `00`–`FF` | 20 Hz – 20 kHz (log) | A single A+UP/DOWN step always changes the displayed Hz. |
+| FREQ | `00`–`FF` | 20 Hz – 20 kHz (log) | A single A+LEFT/RIGHT step always changes the displayed Hz. |
 | GAIN | `00`–`F0` | **−12.0 … +12.0 dB** | Small step **0.1 dB**, large step **1.0 dB**. `0.0 dB` is the default. |
 | Q | `00`–`FF` | 0.1 – 10.0 (log) | Bandwidth; higher = narrower. |
 
@@ -1153,8 +1207,8 @@ Each band has 4 parameters: TYPE, FREQ, GAIN, Q.
 |---|---|
 | D-pad LEFT/RIGHT | Switch between bands (1–3) |
 | D-pad UP/DOWN | Move between parameters (TYPE, FREQ, GAIN, Q) |
-| A + UP/DOWN | Edit value (small step — GAIN: ±0.1 dB) |
-| A + LEFT/RIGHT | Edit value (large step — GAIN: ±1.0 dB) |
+| A + LEFT/RIGHT | Edit value (small step — GAIN: ±0.1 dB) |
+| A + UP/DOWN | Edit value (large step — GAIN: ±1.0 dB) |
 | A + B | Reset parameter to default (FREQ mid · GAIN 0 dB · Q mid) |
 | B + LEFT/RIGHT | Switch EQ preset slot (the slot shown in the top row) |
 | B | Close EQ EDITOR and apply changes (SELECT also closes) |
@@ -1172,7 +1226,7 @@ Navigate here: **R+UP** from SONG or CHAIN.
 
 | Parameter | Description |
 |---|---|
-| NAME | Project name. Tap A (or SELECT) to edit it on the keyboard overlay; hold A + UP/DOWN cycles the character under the cursor in place. |
+| NAME | Project name. Tap A (or SELECT) to edit it on the keyboard overlay; hold A + LEFT/RIGHT cycles the character under the cursor in place. |
 | TEMPO | BPM. |
 | TRANSPOSE | Global semitone offset applied to all tracks. |
 
@@ -1206,7 +1260,7 @@ All value rows are edited with **A + D-pad**. A single **A** press is reserved f
 
 | Setting | Options | Description |
 |---|---|---|
-| LAYOUT | PORTRAIT (+ SKIN) | On a touchscreen device the app lays itself out as the portrait device skin, and the row's real control is the **SKIN** column beside it: **NORM** (beige casing, dark labels) or **DARK** (slate casing, white labels). There is no mode to choose — PocketTracker picks portrait, landscape or fullscreen for you from the screen shape and from whether it finds physical buttons. |
+| LAYOUT | PORTRAIT (+ SKIN) | On a touchscreen device the app lays itself out as the portrait device skin, and the row's real control is the **SKIN** column beside it: **NORM** (beige casing, dark labels) or **DARK** (slate casing, white labels). PocketTracker picks portrait, landscape or fullscreen for you from the screen shape and from whether it finds physical buttons; a mode column appears only on a device that has both a touchscreen and a controller (see below). |
 | SCALING | INT / BILINEAR | Screen scaling algorithm. INT = crisp pixel-perfect integer scaling. BILINEAR = smooth subpixel scaling. |
 | BTN SOUND | ON / OFF (+ VOL) | Play a click sound on button press. The **VOL** sub-column to its right sets click volume (`00`–`FF`). |
 | BTN VIBRO | ON / OFF (+ POW) | Haptic feedback on button press (where supported). The **POW** sub-column to its right sets vibration intensity (`00`–`FF`). |
@@ -1218,9 +1272,20 @@ All value rows are edited with **A + D-pad**. A single **A** press is reserved f
 | VISUALIZER | SCOPE / FLAT / OCTA / OCTA.F / SPECT / SPCT.P | Visualizer mode for the top bar (see §3 for descriptions). |
 | THEME | theme name > | Shows the current theme name. Press A to open the THEME EDITOR. |
 | TEMPLATE | SAVE / CLEAR | SAVE stores the current project as a template for new projects. CLEAR removes the saved template. |
+| ABXY | AUTO / XBOX / NINTENDO | Which face button your controller has **printed** A. Appears only while a controller is attached. **AUTO** trusts the controller and is right for a handheld's built-in pad and for a real Switch pad. Use **NINTENDO** if A is the right-hand button but the app reads it as B - common with 8BitDo pads in XInput mode, which report themselves as Xbox controllers. **XBOX** = A is the bottom button. Keyboard keys are never affected. |
 | RESUME | ASK / AUTO | What happens to unsaved work after the app is killed in the background. **ASK** shows a "RECOVER WORK?" prompt on the next launch; **AUTO** silently restores the autosave (use on ROMs that kill the app when backgrounded, e.g. Miyoo Flip / Ayaneo). |
 
 Layout and scaling mode are persisted across app restarts. The auto-detected layout on startup depends on whether physical gamepad buttons are detected.
+
+**Phone held upright with a clip-on controller:** when a phone is in portrait and a physical
+controller is attached, PocketTracker moves the tracker into the upper half of the screen instead
+of centring it, so a grip like the GameSir Pocket Taco or the 8BitDo FlipPad does not cover it.
+Unclip the controller or turn the phone and it centres again.
+
+**Keeping the on-screen buttons with a controller attached:** attaching a controller normally turns
+the on-screen buttons off. On a device that has both, the LAYOUT row offers **FULL** (no on-screen
+buttons) and **PORTRAIT** (keep them), so you can use the touchscreen and the controller together.
+BTN SOUND and BTN VIBRO appear only while the on-screen buttons are actually shown.
 
 **Not every row is on every device.** LAYOUT, BTN SOUND and BTN VIBRO configure a touchscreen and its
 virtual buttons, so they appear on Android and not on the Windows, Linux or handheld builds — where
@@ -1244,13 +1309,13 @@ The top row lets you cycle through built-in themes and save or load custom theme
 
 | Cursor position (channel) | Action |
 |---|---|
-| 0 — theme name | A+UP/DOWN to cycle built-in themes: CLASSIC, AMBER, BLUE, MONO |
+| 0 — theme name | A+LEFT/RIGHT to cycle built-in themes: CLASSIC, AMBER, BLUE, MONO |
 | 1 — SAVE | Press A to save the current theme to a `.ptt` file |
 | 2 — LOAD | Press A to load a theme from a `.ptt` file |
 
 Move between positions with D-pad LEFT/RIGHT.
 
-### Rows 1–16 — Color parameters
+### Rows 1–22 — Color parameters
 
 Each row edits one color in the theme. The color preview swatch is shown on the right. Cursor moves between **R**, **G**, **B** channels with D-pad LEFT/RIGHT.
 
@@ -1258,20 +1323,28 @@ Each row edits one color in the theme. The color preview swatch is shown on the 
 |---|---|
 | BACKGROUND | Module fill and default row background |
 | ROW 4TH | Beat-accent rows (every 4th step) |
-| ROW CURSOR | The row the cursor is on |
-| ROW PLAY | The currently playing step during playback |
-| ROW SELECT | Selected region during copy/paste |
+| ROW CURSOR | The cell the cursor is on in a grid (SONG, CHAIN, PHRASE, TABLE, GROOVE); the whole row on list screens such as SETTINGS |
+| ROW PLAY | The `>` playback marker. It is drawn brightened, so a dark value still reads as ink |
+| ROW SELECT | The selected cells during copy/paste |
 | TXT TITLE | Screen header text (e.g., "PHRASE", "INSTRUMENT") |
 | TXT PARAM | Inactive parameter labels |
 | TXT VALUE | Inactive parameter values |
-| TXT CURSOR | Text on the cursor row |
+| TXT CURSOR | Text under the cursor, and the row number and column heading that mark where it is |
 | TXT EMPTY | Empty / placeholder cells |
 | VIZ BG | Visualizer background |
 | VIZ LINE | Visualizer center line |
 | VIZ WAVE | Waveform / bar fill color |
+| MTR BG | Meter background |
 | MTR LOW | Meter green zone (below −6 dBFS) |
 | MTR MID | Meter yellow zone (−6 to 0 dBFS) |
 | MTR HIGH | Meter red zone (≥ 0 dBFS) |
+| EQ BG | EQ EDITOR spectrum panel background |
+| EQ FILL | Shading under the EQ EDITOR's spectrum curve |
+| EQ BORDER | The EQ EDITOR's spectrum curve itself |
+| EQ TXT | Frequency labels on the EQ EDITOR's spectrum |
+| TXT SELECT | Text in the selected cells |
+
+A theme file saved before these rows existed loads with them set to what the screen drew previously — the EQ rows from the theme's own colors, TXT SELECT from VIZ WAVE — so an older `.ptt` looks unchanged until you edit them.
 
 ### Controls
 
@@ -1279,8 +1352,8 @@ Each row edits one color in the theme. The color preview swatch is shown on the 
 |---|---|
 | D-pad UP/DOWN | Move between color rows |
 | D-pad LEFT/RIGHT | Move between R / G / B channels (on color rows), or between theme name / SAVE / LOAD (on row 0) |
-| A + UP/DOWN | +1 / −1 to the selected channel |
-| A + LEFT/RIGHT | +16 / −16 to the selected channel |
+| A + LEFT/RIGHT | +1 / −1 to the selected channel |
+| A + UP/DOWN | +16 / −16 to the selected channel |
 | B | Close theme editor |
 
 ### Built-in themes
@@ -1363,8 +1436,9 @@ Switches the current track to use groove `XX` from this step onward.
 ### HOP `XY` — Hop / Jump
 
 - In a **phrase**: ends the phrase at this step; the **next** phrase starts at row `Y` (`X` is ignored).
-- In a **table**: jumps to table row `Y`, `X` times before falling through (`X` = 0: forever).
-- `HOP FF`: **stops the track** — in SONG mode until the next song row; in PHRASE/CHAIN playback the track stays silent until you stop.
+- In a **table**: jumps **its own FX column's** playhead to table row `Y`, `X` times before falling through (`X` = 0: forever).
+- `HOP FF` in a **phrase**: **stops the track** — in SONG mode until the next song row; in PHRASE/CHAIN playback the track stays silent until you stop.
+- `HOP FF` in a **table**: stops **that FX column** only. The table ends when all three have stopped.
 
 `HOP 00` at the end of a section = infinite loop of that section.
 
@@ -1489,11 +1563,15 @@ Overrides the instrument's default table, using table `XX` for this note.
 
 Jumps the table playhead to row `0X`. `THO 00` = loop current section.
 
+In a **table** it moves its own FX column's playhead; in a **phrase** it moves all three.
+
 ---
 
 ### TIC `XX` — Tick Rate
 
-Sets the table tick rate:
+Sets the tick rate of the FX column it is written in — each of the three has its own. In a table's
+**last row** it sets that column's rate from the start; anywhere else it takes effect as that
+column's playhead passes.
 
 - `TIC 06` = default (6 ticks per row, two rows per phrase step)
 - `TIC 03` = twice as fast
@@ -1884,8 +1962,8 @@ needs and what is hardest to describe from memory. If something is wrong, attach
 
 1. Open **PHRASE** (R+RIGHT from SONG).
 2. Cursor on row 00, column N. Press **A** — inserts default note (C-4, instrument 00).
-3. Use **A+UP/DOWN** to change pitch; **A+LEFT/RIGHT** to change octave.
-4. Move to the I column, use **A+UP/DOWN** to select an instrument.
+3. Use **A+LEFT/RIGHT** to change pitch; **A+UP/DOWN** to change octave.
+4. Move to the I column, use **A+LEFT/RIGHT** to select an instrument.
 5. Press **START** to hear the phrase loop.
 
 ### Building a basic beat
@@ -1943,8 +2021,8 @@ Swap `VTR` for `VMV` to fade the whole mix instead, or for `REV` to open a rever
 
 1. Navigate to SETTINGS (PROJECT → SETTINGS row → A).
 2. Move to the THEME row and press **A** to open the THEME EDITOR.
-3. On row 0, use A+UP/DOWN on the theme name to cycle through built-in themes (CLASSIC, AMBER, BLUE, MONO).
-4. Move down to any color row, then LEFT/RIGHT to select R/G/B, and A+UP/DOWN to adjust.
+3. On row 0, use A+LEFT/RIGHT on the theme name to cycle through built-in themes (CLASSIC, AMBER, BLUE, MONO).
+4. Move down to any color row, then LEFT/RIGHT to select R/G/B, and A+LEFT/RIGHT to adjust.
 5. When you are happy with the look, move back to row 0, move RIGHT to SAVE, and press A.
 
 ---
@@ -2106,8 +2184,8 @@ exports and sample-editor saves keep their own folders.
 |---|---|
 | D-pad | Move cursor |
 | A | Insert / confirm |
-| A + UP / DOWN | Edit value (+1 / −1) |
-| A + RIGHT / LEFT | Edit value (+16 / −16, or ±1 octave for notes) |
+| A + LEFT / RIGHT | Edit value (+1 / −1) |
+| A + UP / DOWN | Edit value (+16 / −16, or ±1 octave for notes) |
 | A + B | Delete / clear value |
 | B | Cancel / back / delete |
 | START | Play / Stop |
@@ -2166,7 +2244,7 @@ exports and sample-editor saves keep their own folders.
 | L + A *(in selection)* | Cut (copy + clear), exit selection |
 | L + A *(outside selection)* | Paste at cursor |
 | A + B *(in selection)* | Delete selection (no clipboard), exit |
-| A + UP / DOWN *(in selection)* | Increment / decrement all selected values |
+| A + LEFT / RIGHT *(in selection)* | Increment / decrement all selected values |
 | L + B + A | Deep-clone the chain / phrase under the cursor |
 | L + R *(in selection)* | Leave selection mode; the copy buffer survives |
 | L + R *(outside selection)* | Clear the copy buffer |
@@ -2212,8 +2290,8 @@ exports and sample-editor saves keep their own folders.
 | Input | Action |
 |---|---|
 | A | Insert last-used chain ID |
-| A + UP / DOWN | ±1 chain ID |
-| A + LEFT / RIGHT | ±16 chain IDs |
+| A + LEFT / RIGHT | ±1 chain ID |
+| A + UP / DOWN | ±16 chain IDs |
 | A + B | Delete (set to --) |
 | B + UP / DOWN | Page up / down (16 rows) |
 
@@ -2224,8 +2302,8 @@ exports and sample-editor saves keep their own folders.
 | Input | Action |
 |---|---|
 | A | Insert last-used phrase / TSP |
-| A + UP / DOWN | ±1 |
-| A + LEFT / RIGHT | ±16 (PHR), ±12 semitones (TSP) |
+| A + LEFT / RIGHT | ±1 |
+| A + UP / DOWN | ±16 (PHR), ±12 semitones (TSP) |
 | A + B | Delete slot |
 | B + LEFT / RIGHT | Previous / next chain |
 
@@ -2236,8 +2314,8 @@ exports and sample-editor saves keep their own folders.
 | Input | Action |
 |---|---|
 | A | Insert last-used note / value |
-| A + UP / DOWN | ±1 semitone (note), ±1 (other) |
-| A + LEFT / RIGHT | ±1 octave (note), ±16 (other) |
+| A + LEFT / RIGHT | ±1 semitone (note), ±1 (other) |
+| A + UP / DOWN | ±1 octave (note), ±16 (other) |
 | A + B | Delete value |
 | B + LEFT / RIGHT | Previous / next phrase |
 
@@ -2251,7 +2329,7 @@ exports and sample-editor saves keep their own folders.
 | SELECT (on SAMPLE) | Open SAMPLE EDITOR |
 | A or SELECT (on NAME) | Edit instrument name |
 | A or SELECT (on EQ) | Open EQ EDITOR |
-| A + UP / DOWN | Edit current parameter |
+| A + LEFT / RIGHT | Edit current parameter |
 | A + B | Reset to default |
 | B + LEFT / RIGHT | Previous / next instrument |
 
@@ -2278,7 +2356,7 @@ exports and sample-editor saves keep their own folders.
 
 | Input | Action |
 |---|---|
-| A + UP / DOWN | Edit value |
+| A + LEFT / RIGHT | Edit value |
 | A + B | Delete value |
 | B + LEFT / RIGHT | Previous / next table |
 | L + B | Enter selection mode |
@@ -2290,8 +2368,8 @@ exports and sample-editor saves keep their own folders.
 | Input | Action |
 |---|---|
 | D-pad UP / DOWN | Move between rows |
-| A + UP / DOWN | Edit tick value |
-| A + LEFT / RIGHT | Large step |
+| A + LEFT / RIGHT | Edit tick value |
+| A + UP / DOWN | Large step |
 | A + B | Clear row |
 | B + LEFT / RIGHT | Previous / next groove |
 
@@ -2303,8 +2381,8 @@ exports and sample-editor saves keep their own folders.
 |---|---|
 | D-pad UP / DOWN | Move between parameters |
 | D-pad LEFT / RIGHT | Switch between paired slots |
-| A + UP / DOWN | Edit value |
-| A + LEFT / RIGHT | Large step |
+| A + LEFT / RIGHT | Edit value |
+| A + UP / DOWN | Large step |
 | A + B | Reset to default |
 | B + LEFT / RIGHT | Previous / next instrument |
 
@@ -2316,8 +2394,8 @@ exports and sample-editor saves keep their own folders.
 |---|---|
 | D-pad LEFT / RIGHT | Select track column |
 | D-pad UP / DOWN | Move between rows |
-| A + UP / DOWN | ±1 |
-| A + LEFT / RIGHT | ±16 |
+| A + LEFT / RIGHT | ±1 |
+| A + UP / DOWN | ±16 |
 | A or SELECT (on master EQ) | Open EQ EDITOR |
 
 ---
@@ -2330,8 +2408,8 @@ Open with **A** (or SELECT) on an EQ cell.
 |---|---|
 | D-pad LEFT / RIGHT | Switch between bands 1–3 |
 | D-pad UP / DOWN | Move between parameters |
-| A + UP / DOWN | Edit value |
-| A + LEFT / RIGHT | Large step |
+| A + LEFT / RIGHT | Edit value |
+| A + UP / DOWN | Large step |
 | B + LEFT / RIGHT | Switch EQ preset slot |
 | B | Close and apply (SELECT also closes) |
 
@@ -2343,8 +2421,8 @@ Open with **A** (or SELECT) on an EQ cell.
 |---|---|
 | D-pad UP / DOWN | Move between color rows |
 | D-pad LEFT / RIGHT | Move between R / G / B (color rows) or name / SAVE / LOAD (row 0) |
-| A + UP / DOWN | ±1 to selected channel |
-| A + LEFT / RIGHT | ±16 to selected channel |
+| A + LEFT / RIGHT | ±1 to selected channel |
+| A + UP / DOWN | ±16 to selected channel |
 | B | Close |
 
 ---

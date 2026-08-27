@@ -536,6 +536,13 @@ int run(const AppConfig& cfg) {
         ui::load_input_config(filesystem, inputCfg, warnings);
         for (const ui::InputConfigWarning& w : warnings) std::printf("config:   %s\n", w.text.c_str());
         input.apply_input_config(inputCfg);
+
+        // config.json SEEDS the ABXY row rather than competing with it. A user who wrote a value
+        // into the file before the row existed keeps it; once the row says anything but AUTO, the
+        // row wins and the file is ignored. Two controls for one value is how one of them becomes a
+        // lie, and this is the cheapest way to have only one.
+        if (state.settings.abxyIndex == 0 && inputCfg.abxy != ui::AbxyLayout::AUTO)
+            state.settings.abxyIndex = static_cast<int>(inputCfg.abxy);
     }
 
     // Resolve the PERSISTED skin id (a stable string, `portrait_skin`) to the runtime index the SETTINGS
@@ -763,7 +770,7 @@ int run(const AppConfig& cfg) {
     // to "did my samples load?" and "where did it put its folders?".
     if (cfg.console) {
         std::printf("\nWASD/arrows move   K/Enter = A   J/Esc = B   U/I = L/R   LShift = SELECT   SPACE = START   F10 quit\n");
-        std::printf("A+UP/DOWN edit   A+LEFT/RIGHT edit fast   A+B clear   A,A insert next unused\n");
+        std::printf("A+LEFT/RIGHT edit   A+UP/DOWN edit fast   A+B clear   A,A insert next unused\n");
         std::printf("B+LEFT/RIGHT change WHICH phrase/chain/table   B+UP/DOWN page the song\n");
         std::printf("L+B select (tap again to widen)   B copies   L+A cut/paste   L+R deselect   L+B+A clone\n");
         // ASCII only, deliberately: this goes to a console whose encoding is not ours to choose (a
@@ -773,7 +780,7 @@ int run(const AppConfig& cfg) {
         std::printf("R+DPAD moves between screens: SONG CHAIN PHRASE INSTRUMENT TABLE MODS INST.POOL\n");
         std::printf("                             GROOVE MIXER EFFECTS PROJECT SETTINGS\n");
         std::printf("PROJECT: A on SAVE/LOAD/NEW, on EXPORT MIX/STEMS, on COMPACT SEQ/INST, on SETTINGS>, on EXIT\n");
-        std::printf("         A on NAME opens the keyboard; A+UP/DOWN edits one character in place\n");
+        std::printf("         A on NAME opens the keyboard; A+LEFT/RIGHT edits one character in place\n");
         std::printf("         a confirm asks A=YES B=NO before anything destructive\n");
         std::printf("START auditions the instrument on INSTRUMENT/POOL/MODS/TABLE - any button silences it\n");
         std::printf("SELECT on the EFFECTS TIME row toggles delay sync (free ms <-> note divisions)\n");
@@ -785,7 +792,7 @@ int run(const AppConfig& cfg) {
         std::printf("KEYBOARD: DPAD picks a key   A types   B deletes   R+UP/DOWN = ABC/123 layout\n");
         std::printf("          R+LEFT/RIGHT moves the text cursor   SELECT aborts   START applies\n");
         std::printf("\nEQ EDITOR (A on any EQ cell: INSTRUMENT/POOL/MIXER master/EFFECTS REV+DLY/SAMPLE FX):\n");
-        std::printf("  DPAD UP/DOWN picks the param, LEFT/RIGHT the band   A+UP/DOWN and A+LEFT/RIGHT dial it\n");
+        std::printf("  DPAD UP/DOWN picks the param, LEFT/RIGHT the band   A+LEFT/RIGHT and A+UP/DOWN dial it\n");
         std::printf("  A+B resets it   B+LEFT/RIGHT changes the EQ SLOT   B or SELECT closes\n");
         std::printf("  START still auditions underneath, so you can sweep a band across a ringing note\n\n");
     }
@@ -860,6 +867,24 @@ int run(const AppConfig& cfg) {
     };
     bool physicalPad = compute_has_pad();
     bool padDirty    = false;
+
+    // Does `layoutIndex` currently carry the FULL/PORTRAIT choice? The list is one entry long
+    // without a pad and two with, so the same index means different things in the two states — and
+    // reading it as a choice while it means the other thing is how the choice gets cleared. Set
+    // from `padChoice` at the end of each gate pass; see the read-back there.
+    bool padLayoutLive = false;
+
+    // The last rotation permission handed to the platform, so it is pushed on CHANGE rather than
+    // every frame (each call is a JNI round trip that touches the activity). -1 = nothing sent yet,
+    // a value neither branch can produce, so the first gate pass always states the boot answer.
+    int lastLandscapeAllowed = -1;
+
+    // DEV BRING-UP ONLY, and the same knob POCKETTRACKER_TOUCH is: PT_TOP_ANCHOR=1 forces the
+    // clip-on-gamepad frame placement on a desktop, where the gate below can never fire (no
+    // touchscreen). Drag the window tall and the frame moves into the top half. It is how the
+    // placement is looked at without a phone and a controller in hand.
+    const char* topAnchorEnv   = SDL_getenv("PT_TOP_ANCHOR");
+    const bool  forceTopAnchor = topAnchorEnv && topAnchorEnv[0] == '1';
 
     // ── C7 state ─────────────────────────────────────────────────────────────────────────────────
     // `sawInput`     — anything happened this frame that could have changed what is on screen.
@@ -946,8 +971,74 @@ int run(const AppConfig& cfg) {
             // instead. `padDirty` is armed by a controller add/remove in the event loop below, so the JNI
             // answer is refreshed the frame after the hardware changes, never every frame.
             if (padDirty) { physicalPad = compute_has_pad(); padDirty = false; }
-            const bool useTouch = cfg.touchCapable && !physicalPad;
+            // ── On-screen buttons: automatic, EXCEPT where the device has both ────────────────
+            //
+            // A pad turning the on-screen buttons off is the right default and was the whole rule
+            // until a phone could have both at once: a clip-on controller leaves the touchscreen
+            // exactly where it was, and only its owner knows whether they want the buttons too.
+            // So where both exist the LAYOUT row offers the choice, and this reads it.
+            //
+            // ⚠️ `touchButtonsWithPad` DEFAULTS FALSE, which is what keeps every existing install on
+            // the behaviour it has: a pad still means fullscreen until somebody says otherwise.
+            const bool padChoice = cfg.touchCapable && physicalPad;
+
+            // ⚠️ **THE ROW'S WRITE IS CONSUMED HERE, BEFORE THE INDEX IS RE-DERIVED BELOW — and the
+            // order is the whole mechanism.** Input is polled AFTER this block, so a press lands on
+            // `layoutIndex` once the frame's derive has already run; reading the index back further
+            // down the SAME frame reads only what that derive wrote, and the next frame's derive
+            // overwrites the edit before anything sees it. Reading it at the top instead means the
+            // choice takes effect on the very frame after the press, gate included.
+            //
+            // `padLayoutLive` says the index CURRENTLY means FULL/PORTRAIT. Without it the first
+            // frame under a freshly-plugged pad would read an index that meant the one-entry
+            // touch-only list (always 0) as a deliberate "FULL", silently clearing the choice.
+            if (padChoice && padLayoutLive)
+                state.settings.touchButtonsWithPad = (state.settings.layoutIndex == 1);
+            padLayoutLive = padChoice;
+
+            const bool useTouch  = cfg.touchCapable &&
+                                   (!physicalPad || state.settings.touchButtonsWithPad);
             touch.set_enabled(useTouch);
+
+            // ── Rotation follows the layout that is actually in force ────────────────────────────
+            //
+            // Landscape is allowed EXACTLY where the FULL layout is — a pad is driving and the frame
+            // is centred with no on-screen buttons, which is the one landscape presentation the app
+            // has. Every other state (no pad, or a pad with the buttons kept) would rotate into the
+            // letterboxed touch panels, a layout release deliberately does not ship: nothing in
+            // SETTINGS names it and the only way back out is to turn the phone.
+            //
+            // ⚠️ **THE BOOT HINT CANNOT DO THIS ON ITS OWN.** `SDL_HINT_ORIENTATIONS` is read once at
+            // window creation, so a pad UNPLUGGED mid-session left the activity free to stay
+            // landscape while the app had already switched back to the portrait skin. The platform
+            // re-applies it live; desktop and the handhelds leave the hook null, and it is a no-op.
+            if (cfg.allowLandscape && static_cast<int>(!useTouch) != lastLandscapeAllowed) {
+                lastLandscapeAllowed = !useTouch ? 1 : 0;
+                cfg.allowLandscape(!useTouch);
+            }
+
+            // ── The frame moves up when a clip-on gamepad is covering the bottom of the phone ─────
+            //
+            // A GameSir Pocket Taco or an 8BitDo FlipPad grips a phone held in PORTRAIT and its two
+            // halves sit over the bottom third of the screen. That configuration is exactly the one
+            // where nothing else moves the frame: a physical pad turns the on-screen buttons off, so
+            // the fullscreen layout centres the tracker squarely behind the controller.
+            //
+            // All three terms are needed and each excludes a real device:
+            //   touchCapable   a phone or tablet - never a desktop window dragged tall, and never a
+            //                  Linux handheld, whose cap is already false
+            //   physicalPad    a pad is actually attached (hot-plug tracked, see above)
+            //   outH > outW    held in portrait; landscape is what a handheld is and it is centred
+            //
+            // Read per frame from the live gate, so unclipping the pad or turning the phone puts the
+            // frame back with no restart and no setting to find.
+            // ⚠️ `!useTouch` IS PART OF THE GATE now that the buttons can be kept under a pad. With
+            // them up the portrait skin places the frame itself (present_skinned) and this value is
+            // never read - so without this term the layout line below would report an anchor that is
+            // not in force, which is the lying instrument its own comment block exists to prevent.
+            const bool topAnchor = forceTopAnchor ||
+                                   (!useTouch && cfg.touchCapable && physicalPad && outH > outW);
+            video.set_top_anchor(topAnchor);
 
             // ⚠️ **THE DECISION, SAID OUT LOUD — because a phone that lands on FULL and one that has no
             // touchscreen at all look identical from here.** A user reporting "it opened without the
@@ -957,11 +1048,12 @@ int run(const AppConfig& cfg) {
             // Printed on every CHANGE (and therefore once at boot), not per frame — hot-plugging a pad
             // is a transition worth a line too.
             if (cfg.console && (useTouch != lastUseTouch || outW != lastGateW || outH != lastGateH)) {
-                std::printf("layout:  %s  (touchCapable=%d physicalPad=%d output=%dx%d %s)\n",
+                std::printf("layout:  %s  (touchCapable=%d physicalPad=%d output=%dx%d %s%s)\n",
                             useTouch ? (outH > outW ? "PORTRAIT2 skin" : "landscape touch panels")
                                      : "FULL - no on-screen buttons",
                             cfg.touchCapable ? 1 : 0, physicalPad ? 1 : 0, outW, outH,
-                            outH > outW ? "portrait" : "landscape");
+                            outH > outW ? "portrait" : "landscape",
+                            topAnchor ? ", frame anchored TOP HALF - clip-on pad" : "");
                 std::fflush(stdout);
                 lastUseTouch = useTouch;
                 lastGateW    = outW;
@@ -978,11 +1070,28 @@ int run(const AppConfig& cfg) {
             // hiding it here removes the row everywhere consistently — platform_caps.h's "a setting that
             // configures nothing is a lie", applied at runtime because the fact it rests on (a controller)
             // is a runtime one. Recomputed with `useTouch`, so unplugging a pad brings the row back.
-            state.caps.touchLayouts = cfg.caps.touchLayouts && useTouch;
+            // ⚠️ AND IT IS NO LONGER GATED ON `useTouch`, which would hide the row in exactly the
+            // state it now exists for: a pad is attached, the buttons are off, and this row is how
+            // they are turned back on. It always has something to say on a touchscreen device - the
+            // skin when the buttons are up, the FULL / PORTRAIT choice when a pad is on.
+            state.caps.touchLayouts = cfg.caps.touchLayouts && cfg.touchCapable;
+
+            // BTN SOUND and BTN VIBRO sound and shake the ON-SCREEN buttons, so they follow whether
+            // those are DRAWN rather than whether the device could draw them - platform_caps.h's
+            // "a setting that configures nothing is a lie", one more row than it used to reach.
+            state.caps.buttonFeedback = cfg.caps.buttonFeedback && useTouch;
+
+            // The face-button swap is for a pad that misreports itself; with nothing plugged in there
+            // is nothing to swap. Hot-plugged, like the two above.
+            state.caps.padAttached = physicalPad;
 
             // Push the user's live BTN SOUND / BTN VIBRO scalars so the next tap plays with whatever
             // SETTINGS currently shows — read here, in the loop, because they can change live. A no-op
             // where there is no feedback sink (button_feedback.h).
+            // The face-button swap, read live so the row takes effect on the next press.
+            input.set_abxy(static_cast<ui::AbxyLayout>(
+                std::clamp(state.settings.abxyIndex, 0, 2)));
+
             touch.set_feedback_settings({state.settings.buttonSoundEnabled,
                                          state.settings.buttonSoundVolume,
                                          state.settings.buttonVibroEnabled,
@@ -995,14 +1104,29 @@ int run(const AppConfig& cfg) {
             // — the shell already auto-selects portrait/landscape by aspect and fullscreen by controller
             // presence, so there is no mode for the user to override). `skinCount > 0` is what makes the
             // editor draw the second column at all; the display strings are the platform's to supply.
+            // The mode column has two entries only where there is a choice to make - a touchscreen
+            // with a pad on it. Everywhere else it is the single "PORTRAIT" it always was, because a
+            // touch-only device offered FULL would have no way left to press anything.
+            //
+            // FULL is index 0 and PORTRAIT index 1, and the INDEX IS DERIVED from the persisted
+            // boolean rather than persisted itself: the list is one entry long without a pad and two
+            // with, so a stored index would mean different things in the two states and unplugging
+            // would forget the choice.
+            if (padChoice) {
+                state.settings.layoutCount = 2;
+                state.settings.layoutIndex = state.settings.touchButtonsWithPad ? 1 : 0;
+                state.layoutText           = state.settings.touchButtonsWithPad ? "PORTRAIT" : "FULL";
+            }
             if (useTouch) {
                 if (state.settings.skinIndex < 0 || state.settings.skinIndex >= kDeviceSkinCount)
                     state.settings.skinIndex = device_skin_index(state.settings.portraitSkin);
                 state.settings.skinCount   = kDeviceSkinCount;
-                state.settings.layoutCount = 1;
-                state.settings.layoutIndex = 0;
+                if (!padChoice) {
+                    state.settings.layoutCount = 1;
+                    state.settings.layoutIndex = 0;
+                }
                 const DeviceSkinDef& d = kDeviceSkins[state.settings.skinIndex];
-                state.layoutText            = "PORTRAIT";
+                if (!padChoice) state.layoutText = "PORTRAIT";
                 state.skinText              = d.displayName;
                 state.settings.portraitSkin = d.id;   // keep the persisted id in step with the choice
 
@@ -1015,6 +1139,7 @@ int run(const AppConfig& cfg) {
                 }
             } else {
                 state.settings.skinCount = 0;   // no skin column on a fullscreen (controller) layout
+                if (!padChoice) { state.settings.layoutCount = 1; state.settings.layoutIndex = 0; }
             }
 
             // ── The screen overlay (D6): the CRT filter's SETTINGS row + its texture ──────────────
@@ -1241,12 +1366,23 @@ int run(const AppConfig& cfg) {
         // this loop's period and not something a backend chose.
         host.poll();
 
-        const PlaybackPosition pos = host.playheads();
-        state.isPlaying        = host.is_playing();
-        state.playbackRow      = pos.phraseStep;
-        state.playbackChainRow = pos.chainRow;
-        state.playbackSongRow  = pos.songRow;
-        state.trackMask        = host.track_mask();
+        state.isPlaying = host.is_playing();
+        // Eight asks, one per track, because there is no ninth answer that covers them all. A track
+        // with no position hands back −1 in every field and the screens draw no marker for it —
+        // which is what makes auditioning a phrase leave CHAIN and SONG alone (ui/playhead.h).
+        for (int t = 0; t < 8; ++t) {
+            const PlaybackPosition p = host.playheads(t);
+            state.playheads[t] = {p.songRow, p.chainId, p.chainRow, p.phraseId, p.phraseStep};
+            const songcore::LiveSlot q = host.live_queue(t);
+            state.liveQueue[t] = {q.targetRow, q.stop, q.immediate, q.armed()};
+        }
+        // ⚠️ READ BACK FROM THE HOST, not trusted from the toggle that set it: `stop()` and a project
+        // load can both end a take, and a screen still drawing LIVE over a transport that has left it
+        // would blink markers at a queue nothing is holding.
+        state.liveMode     = host.live_mode();
+        // The blink phase, handed to the drawing layer rather than reached for by it — see AppState.
+        state.blinkPhaseMs = static_cast<int>(now % 1000);
+        state.trackMask = host.track_mask();
 
         // Everything the UI reads back OUT of the engine: the scope's samples, the eight monitored
         // notes, the table's playing row, the SF2 preset list, the mixer's meters. AFTER the transport
@@ -1306,8 +1442,10 @@ int run(const AppConfig& cfg) {
         // what stops them, and the pixel net cannot help because a frame that is never drawn is never
         // compared. Stop the transport and each hangs for the fall it still owes (the markers ~5 s, the
         // spectrum ~1 s), stepping down once per input instead — any input, mapped or not, because every
-        // SDL event sets `sawInput` and buys exactly one frame. See TrackerLayout::has_falling_meters:
-        // each half is gated there on its module being drawn at all, since nothing off-screen ages and
+        // SDL event sets `sawInput` and buys exactly one frame. The EQ editor's spectrum panel is a third
+        // case and a different one: nothing in it ages, but it is only ever as current as the last frame
+        // drawn, so a closed gate strands whatever was on screen. See TrackerLayout::has_falling_meters:
+        // every term is gated there on its module being drawn at all, since nothing off-screen ages and
         // nothing would ever bring this term back to false.
         const bool metersFalling = layout.has_falling_meters(state);
         const bool audible = audio_is_audible(state);
@@ -1348,14 +1486,19 @@ int run(const AppConfig& cfg) {
         // audio device is calling back, the PLAYHEAD means the sequencer is advancing, and VOICES
         // means events are reaching the engine and turning into sound. Any one stuck at zero names the
         // broken link. A window on screen does not answer that question when there is no screen.
+        //
+        // TRACK 0 of the eight, and it is the right one to print: a PHRASE or CHAIN audition plays
+        // track 0 by default, and under SONG any track advancing proves the clock is alive, which is
+        // the whole job of this line. −1 shows as such, and means that track has no position at all.
         if (cfg.console && now - lastStatus >= 1000) {
             lastStatus = now;
+            const ui::TrackPlayhead& t0 = state.playheads[0];
             std::printf(
                 "%s  frame %-10lld  song %3d  chain %2d  step %2d   voices %2d   %-10s cursor %X,%d"
                 "   drew %lld skip %lld same %lld\n",
                 host.is_playing() ? "play" : "stop",
-                static_cast<long long>(engineRef.getCurrentFrame()), pos.songRow, pos.chainRow,
-                pos.phraseStep, engineRef.getActiveVoiceCount(), ui::screen_label(state.currentScreen),
+                static_cast<long long>(engineRef.getCurrentFrame()), t0.songRow, t0.chainRow,
+                t0.step, engineRef.getActiveVoiceCount(), ui::screen_label(state.currentScreen),
                 state.cursorRow, state.cursorColumn, presented, skipped, drawn - presented);
             std::fflush(stdout);  // block-buffered to a pipe otherwise, and then it says nothing
         }

@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "ui/helpers.h"
+#include "ui/input_config.h"   // abxy_name - the ABXY row and config.json speak one vocabulary
 
 namespace pt::ui {
 
@@ -116,6 +117,11 @@ void SettingsModule::draw(Canvas& c, int x, int y, const SettingsState& s) const
     dual_row(SettingsRow::BTN_VIBRO, "BTN VIBRO", on_off(v.buttonVibroEnabled),
              "POW", std::string(v.vibroPower >= 128 ? "HI" : "LO"));
 
+    // The face-button swap. Its names come from input_config.h, which is also what parses the same
+    // three words out of config.json - one vocabulary, not two.
+    param_row(SettingsRow::ABXY, "ABXY",
+              abxy_name(static_cast<AbxyLayout>(clamp(v.abxyIndex, 0, 2))));
+
     param_row(SettingsRow::KB_INSERT, "KB INSERT", v.insertBefore ? "BEFORE" : "AFTER");
     param_row(SettingsRow::CURSOR,    "CURSOR",    v.cursorRemember ? "REMEMBER" : "REFRESH");
     param_row(SettingsRow::NAV,       "NAV",       v.navSongRelative ? "SONG" : "POOL");
@@ -131,7 +137,16 @@ void SettingsModule::draw(Canvas& c, int x, int y, const SettingsState& s) const
     // THEME shows the name and a ">" — the arrow is the promise that A opens something, and it does:
     // the theme editor is its own module (theme_editor.cpp), opened by InputDispatcher and drawn over
     // this one.
-    param_row(SettingsRow::THEME, "THEME", s.themeName + " >");
+    //
+    // ⚠️ The NAME is clipped, and the arrow is what the budget protects. It is the one value on this
+    // screen a user types, so it is the one that can outrun its column; the row's clip would hide the
+    // overflow but the ">" goes out with it, and the arrow is the only thing saying this row opens a
+    // screen. Two glyphs are held back for it, out of the value column's own width.
+    {
+        constexpr int VALUE_COLS = (WIDTH - 10 - VAL1_X) / CHAR_W;
+        param_row(SettingsRow::THEME, "THEME",
+                  Canvas::clip_text(s.themeName, VALUE_COLS - 2) + " >");
+    }
 
     // TEMPLATE is a BUTTON row, like PROJECT's — two options, no value.
     if (settings_row_visible(SettingsRow::TEMPLATE, s.caps)) {
@@ -200,6 +215,7 @@ CursorContext SettingsModule::cursor_context(const SettingsState& s) const {
             if (s.cursorColumn == 1) return cc::toggle_binary(v.buttonVibroEnabled);
             return cc::toggle_binary(v.vibroPower >= 128);  // LO / HI, not a 0..255 knob
 
+        case SettingsRow::ABXY:       return cc::enum_cycle(v.abxyIndex, 3);
         case SettingsRow::KB_INSERT:  return cc::toggle_binary(v.insertBefore);
         case SettingsRow::CURSOR:     return cc::toggle_binary(v.cursorRemember);
         case SettingsRow::NOTE_PREV:  return cc::toggle_binary(v.notePreviewEnabled);
@@ -284,6 +300,9 @@ SettingsInputResult SettingsModule::handle_input(SettingsValues& v, Theme& theme
             }
             break;
 
+        // Out of range falls back to AUTO - index 0, the same shape LAYOUT and OVERLAY use.
+        case SettingsRow::ABXY:      if (set) v.abxyIndex = (action.value >= 0 && action.value < 3)
+                                                                ? action.value : 0; break;
         case SettingsRow::KB_INSERT: if (set) v.insertBefore       = action.value > 0; break;
         case SettingsRow::CURSOR:    if (set) v.cursorRemember     = action.value > 0; break;
         case SettingsRow::NOTE_PREV: if (set) v.notePreviewEnabled = action.value > 0; break;
