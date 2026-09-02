@@ -253,6 +253,7 @@ int InputDispatcher::cursor_row() const {
     switch (s_.currentScreen) {
         case ScreenType::TABLE:  return s_.tableCursorRow;
         case ScreenType::GROOVE: return s_.grooveCursorRow;
+        case ScreenType::SCALE:  return s_.scaleCursorRow;
         default:                 return s_.cursorRow;
     }
 }
@@ -261,6 +262,7 @@ int InputDispatcher::cursor_column() const {
     switch (s_.currentScreen) {
         case ScreenType::TABLE:  return s_.tableCursorColumn;
         case ScreenType::GROOVE: return 1;
+        case ScreenType::SCALE:  return 1;
         default:                 return s_.cursorColumn;
     }
 }
@@ -269,6 +271,7 @@ void InputDispatcher::set_cursor_row(int row) {
     switch (s_.currentScreen) {
         case ScreenType::TABLE:  s_.tableCursorRow = row;  break;
         case ScreenType::GROOVE: s_.grooveCursorRow = row; break;
+        case ScreenType::SCALE:  s_.scaleCursorRow = row;  break;
         default:                 s_.cursorRow = row;       break;
     }
 }
@@ -319,6 +322,11 @@ CursorContext InputDispatcher::cursor_context() const {
             ps.cursorRow        = s_.cursorRow;
             ps.cursorColumn     = s_.cursorColumn;
             ps.effectTypeCount  = visible_effect_type_count();
+            // ⚠️ The CURSOR needs the project too, not only the renderer: the NOTE cell's scale comes
+            // from it, and a null one silently reads as "chromatic" — a note cursor that steps by
+            // semitones with no error anywhere. `layout.cpp` sets this on its own PhraseEditorState;
+            // the two are separate objects and setting one is not setting the other.
+            ps.project          = &p;
             return phrase_.cursor_context(ps);
         }
         case ScreenType::TABLE: {
@@ -333,6 +341,12 @@ CursorContext InputDispatcher::cursor_context() const {
             gs.cursorRow    = s_.grooveCursorRow;
             gs.cursorColumn = 1;
             return groove_.cursor_context(gs);
+        }
+        case ScreenType::SCALE: {
+            ScaleState cs{p.scales[static_cast<size_t>(s_.currentScale)]};
+            cs.key       = p.scaleKey;
+            cs.cursorRow = s_.scaleCursorRow;
+            return scale_.cursor_context(cs);
         }
 
         case ScreenType::INSTRUMENT: {
@@ -461,6 +475,16 @@ bool InputDispatcher::apply_edit(const InputAction& action) {
                 .handle_input(p.grooves[static_cast<size_t>(s_.currentGroove)], s_.grooveCursorRow,
                               /*cursor_column=*/1, action)
                 .modified;
+
+        case ScreenType::SCALE: {
+            // ⚠️ The KEY row is the one cell on this screen that does NOT edit the object the module
+            // was handed — it edits the project. The module says so by handing the new key back
+            // rather than by reaching for a Project it has no business holding.
+            const ScaleInputResult r = scale_.handle_input(
+                p.scales[static_cast<size_t>(s_.currentScale)], p.scaleKey, s_.scaleCursorRow, action);
+            if (r.newKey >= 0) p.scaleKey = r.newKey;
+            return r.modified;
+        }
 
         case ScreenType::INSTRUMENT: {
             const InstrumentInputResult r = instrument_.handle_input(
@@ -1168,6 +1192,18 @@ void InputDispatcher::on_a_released() {
     s_.fxHelper = FxHelperState{};
 }
 
+void InputDispatcher::on_dpad_released() {
+    // Both accelerations are keyed off "the last call looked like part of the same gesture", so
+    // ending the gesture is all this has to do — the next press then reads as fresh on its own terms.
+    // `lastBrowserMoveDelta_ = 0` is that statement for the browser: a delta is never 0, so the next
+    // call cannot match it.
+    //
+    // The gap tests in both functions STAY. They are no longer the discriminator, but they still
+    // cover the case a release cannot reach: a repeat train that outlives whatever produced it.
+    lastBrowserMoveDelta_    = 0;
+    textCursorRepeatStreak_  = 0;
+}
+
 void InputDispatcher::on_a_deferred() {
     // The mapper is holding this press. Nothing acts here — the one thing recorded is the number that
     // will have MOVED by the time A comes back up. Every other deferred cell opens something that reads
@@ -1414,6 +1450,9 @@ void InputDispatcher::cycle_current_item(int delta) {
             break;
         case ScreenType::GROOVE:
             s_.currentGroove = wrap(s_.currentGroove, 127);
+            break;
+        case ScreenType::SCALE:
+            s_.currentScale = wrap(s_.currentScale, songcore::POOL_SCALES - 1);
             break;
         // INSTRUMENT and MODS cycle the same thing — the instrument — because MODS *is* a view of one.
         // (INST_POOL is absent on purpose: there, the D-PAD already selects the instrument, so B+LEFT
@@ -3027,13 +3066,14 @@ void InputDispatcher::on_button_b() {
 }
 
 void InputDispatcher::on_select() {
-    // ⚠️ BARE SELECT ANSWERS FOR THE KEYBOARD AND FOR NOTHING ELSE, and the emptiness IS the design: the
-    // button is RESERVED for the help overlay, so anything bound here is a gesture that has to be taken
-    // back off users the day help lands. Nothing is missing because of it — every action a cell could
-    // want from SELECT is already on the A or the B sitting on that same cell.
+    // ⚠️ BARE SELECT IS HELP, AND THE KEYBOARD'S ABORT. That is the whole list, and the emptiness
+    // everywhere else was kept for years to make this possible: every action a cell could want from
+    // SELECT is already on the A or the B sitting on that same cell, so nothing had to be taken back
+    // off users when help landed.
     //
-    // ⚠️ THE THREE BROWSER CHORDS ARE A DIFFERENT GESTURE and are untouched by that: SELECT does nothing
-    // ALONE on a browser, because it is a MODIFIER there and its press is only what arms SELECT+A/B/R.
+    // ⚠️ **IT ARRIVES ON THE RELEASE, NOT THE PRESS** (ui/button_mapper.h), and that is what keeps the
+    // three browser chords whole: SELECT is a MODIFIER there, so its press only arms SELECT+A/B/R and
+    // any other button going down during it cancels this handler outright.
     //
     // ⚠️ NOT TO BE CONFUSED WITH THE A-DEFERRAL. `defer_a_to_release` holds A on the cells that open a
     // sub-screen so that a held A+DPAD can still dial the value underneath. That mechanism is required,
@@ -3044,6 +3084,23 @@ void InputDispatcher::on_select() {
     // SELECT that duplicates nothing: B backspaces here, so without it the only way to abandon a rename
     // is to walk the cursor onto ABORT and press A.
     if (qwerty_open()) { qwerty_cancel(); return; }
+
+    // ── HELP ─────────────────────────────────────────────────────────────────────────────────────
+    //
+    // ⚠️ Gated on there BEING a strip to draw it in. The compact panel takes the oscilloscope's 620×70
+    // and nothing else, and the two full-screen modules have neither — a toggle there would set a flag
+    // no frame reads, and the next screen you walked onto would come up holding help you never asked
+    // for. (`full_screen_module` is in ui/app_state.h, shared with the two questions layout.cpp asks.)
+    if (full_screen_module(s_)) return;
+    s_.helpOpen = !s_.helpOpen;
+}
+
+void InputDispatcher::on_help_dismiss() {
+    // ⚠️ **THE PRESS IS NOT CONSUMED — it closes help and then does its normal job**, which is the
+    // whole reason help is not an `Overlay`. It covers the strip and never the editor, so there is
+    // nothing under it to protect from a stray press: closing it and swallowing the press would cost a
+    // button on every gesture and buy nothing.
+    s_.helpOpen = false;
 }
 
 void InputDispatcher::on_stop_preview() {

@@ -377,6 +377,7 @@ add_library(pt-ui STATIC
         ui/modules/file_browser.cpp
         ui/modules/fx_helper_overlay.cpp
         ui/modules/groove_editor.cpp
+        ui/modules/help_panel.cpp
         ui/modules/instrument_editor.cpp
         ui/modules/instrument_pool.cpp
         ui/modules/midi_settings.cpp
@@ -387,6 +388,7 @@ add_library(pt-ui STATIC
         ui/modules/phrase_editor.cpp
         ui/modules/project_editor.cpp
         ui/modules/qwerty_keyboard.cpp
+        ui/modules/scale_editor.cpp
         ui/modules/sample_editor.cpp
         ui/modules/settings_editor.cpp
         ui/modules/song_editor.cpp

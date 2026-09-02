@@ -79,6 +79,7 @@
 #include "ui/modules/eq_editor.h"
 #include "ui/modules/file_browser.h"
 #include "ui/modules/groove_editor.h"
+#include "ui/modules/scale_editor.h"
 #include "ui/modules/instrument_editor.h"
 #include "ui/modules/instrument_pool.h"
 #include "ui/modules/midi_settings.h"
@@ -250,6 +251,16 @@ class InputDispatcher {
     void on_a_released();
 
     /**
+     * Release of any direction: ends both hold accelerations.
+     *
+     * ⚠️ It is the ONLY thing that can. Both of them measure the gap between calls, and a gap cannot
+     * separate a sustained hold from fast repeated taps — which is what made the file browser take
+     * off under a tapped D-pad (issue #32). The shell synthesizes a repeat as another PRESSED and
+     * never interleaves a release, so this fires exactly when the button came up.
+     */
+    void on_dpad_released();
+
+    /**
      * A went down on a cell the mapper is DEFERRING (`defer_a_to_release`), so nothing has fired yet
      * and nothing fires here. It exists for the one thing a release cannot recover: the instant.
      *
@@ -311,12 +322,22 @@ class InputDispatcher {
     void on_button_b();
     void on_button_a();
     /**
-     * Bare SELECT is the KEYBOARD's abort and nothing else. ⚠️ The emptiness everywhere else is
-     * deliberate: the button is RESERVED for the help overlay, and every action a cell could want from
-     * it is already on the A or B sitting on that same cell. SELECT+A/B/R on the browser is a separate
-     * gesture and is unaffected.
+     * Bare SELECT toggles the compact HELP panel, and aborts the keyboard. Nothing else is bound to
+     * it, on any screen.
+     *
+     * ⚠️ **Called on the RELEASE**, and only when SELECT went down and came back up with no other
+     * button touched in between (ui/button_mapper.h). SELECT+A/B/R on the browser is a separate
+     * gesture and cancels this one.
      */
     void on_select();
+
+    /**
+     * Any button that is not SELECT has gone down: put the help panel away.
+     *
+     * ⚠️ Called by the MAPPER on every plain press, like `on_stop_preview` beside it, because the
+     * mapper is the one layer every press passes through. The press is NOT consumed — see the handler.
+     */
+    void on_help_dismiss();
     /** START: play/stop. What it plays depends on the screen you are on. */
     void on_start();
 
@@ -663,6 +684,7 @@ class InputDispatcher {
     PhraseEditorModule     phrase_{};
     TableModule            table_{};
     GrooveModule           groove_{};
+    ScaleModule            scale_{};
     InstrumentEditorModule instrument_{};
     InstrumentPoolModule   pool_{};
     ModulationModule       mods_{};

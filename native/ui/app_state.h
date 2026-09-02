@@ -86,6 +86,7 @@ struct AppState {
     int tableCursorRow    = 0;
     int tableCursorColumn = 1;  // starts on transpose
     int grooveCursorRow   = 0;
+    int scaleCursorRow    = 0;
 
     // INSTRUMENT. Its rows are not a uniform grid — they are the row-kind table in
     // ui/instrument_row_layout.h, and the cursor walks that rather than a range.
@@ -146,6 +147,7 @@ struct AppState {
     int currentInstrument = 0;
     int currentTable      = 0;
     int currentGroove     = 0;
+    int currentScale      = 0;   // which of the 16 slots the SCALE screen is showing, 0-15
 
     // ── Playback (read back from songcore's playheads at 60 Hz) ──────────────────────────────────
     //
@@ -491,6 +493,20 @@ struct AppState {
     std::string statusMessage{};
     bool        statusSuccess = true;
 
+    // ── HELP ON SELECT ───────────────────────────────────────────────────────────────────────────
+    //
+    // Is the help panel standing in for the visualizer? A tap of SELECT toggles it, and the next
+    // press of anything else puts it away — see ui/button_mapper.h.
+    //
+    // ⚠️ **NOT AN OVERLAY, and deliberately not in the `Overlay` set.** It covers only the 620×70
+    // strip, never the editor, so it swallows no button and blocks no gesture: every screen underneath
+    // stays live and usable while it is up, which is what lets the cursor be walked from cell to cell
+    // with the text following it. Adding it to the overlay stack would take that away and would gate
+    // handlers that have nothing to do with it.
+    //
+    // ⚠️ Not persisted. The app opens with the visualizer, whatever the last session was reading.
+    bool helpOpen = false;
+
     // ── The render (PROJECT → EXPORT) ────────────────────────────────────────────────────────────
     //
     // The shell renders SYNCHRONOUSLY, on this thread, with the audio device paused — see the shell's
@@ -538,6 +554,24 @@ struct AppState {
  */
 inline bool modal_backdrop_active(const AppState& s) {
     return s.qwerty.isOpen || s.confirm.is_open() || s.fxHelper.isOpen;
+}
+
+/**
+ * Does a FULL-SCREEN module have the frame — i.e. is none of the furniture drawn this frame?
+ *
+ * ⚠️ Written once because THREE questions read it, and they are in two different files: `draw`'s
+ * early return and `has_falling_meters` (layout.cpp), and whether a SELECT tap can raise the compact
+ * help panel (input_dispatcher.cpp) — the panel lives in the oscilloscope strip, and on these screens
+ * there is no strip. Two copies of this list would be one full-screen module away from disagreeing,
+ * and the ways that shows up are all silent: a redraw loop pinned at 60 Hz over a static frame, or a
+ * help gesture that toggles a flag nothing draws.
+ *
+ * ⚠️ `!s.eq.isOpen` — the EQ editor opened from the sample editor REPLACES it and brings the normal
+ * furniture back, strip included.
+ */
+inline bool full_screen_module(const AppState& s) {
+    return s.currentScreen == ScreenType::FILE_BROWSER ||
+           (s.currentScreen == ScreenType::SAMPLE_EDITOR && !s.eq.isOpen);
 }
 
 /**

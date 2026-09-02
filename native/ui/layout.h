@@ -32,6 +32,7 @@
 #include "ui/modules/eq_editor.h"
 #include "ui/modules/file_browser.h"
 #include "ui/modules/groove_editor.h"
+#include "ui/modules/help_panel.h"
 #include "ui/modules/instrument_editor.h"
 #include "ui/modules/instrument_pool.h"
 #include "ui/modules/midi_settings.h"
@@ -42,6 +43,7 @@
 #include "ui/modules/phrase_editor.h"
 #include "ui/modules/project_editor.h"
 #include "ui/modules/qwerty_keyboard.h"
+#include "ui/modules/scale_editor.h"
 #include "ui/modules/sample_editor.h"
 #include "ui/modules/settings_editor.h"
 #include "ui/modules/song_editor.h"
@@ -133,11 +135,13 @@ private:
     void draw_selection_clipboard(Canvas& c, const AppState& s) const;
 
     OscilloscopeModule    oscilloscope_;
+    HelpPanelModule       helpPanel_;    // drawn INSTEAD of the oscilloscope while help is up
     PhraseEditorModule    phraseEditor_;
     ChainEditorModule     chainEditor_;
     SongEditorModule      songEditor_;
     TableModule           tableModule_;
     GrooveModule          grooveModule_;
+    ScaleModule           scaleModule_;
     InstrumentEditorModule instrumentEditor_;
     InstrumentPoolModule  instrumentPool_;
     ModulationModule      modulation_;
