@@ -16,8 +16,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Gource + xvfb
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gource xvfb
+      - name: Install Gource + xvfb + ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gource xvfb ffmpeg
 
       - name: Generate Gource video
         run: |
