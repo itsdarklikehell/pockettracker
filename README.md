@@ -200,7 +200,7 @@ in this repository — `licenses/` in the Windows zip, the Linux tarball and the
 
 De ontwikkelhistorie van dit project in een film:
 
-<video src="https://raw.githubusercontent.com/itsdarklikehell/pockettracker/main/gource.mp4" controls width="100%"></video>
+<video src="https://raw.githubusercontent.com/hmol33/pockettracker/gource-changes-source-only/gource-720p.mp4" controls width="100%"></video>
 
 *De video wordt automatisch gegenereerd door de [Gource workflow](.github/workflows/gource.yml) bij elke push.*
 
