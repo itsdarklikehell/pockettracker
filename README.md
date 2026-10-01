@@ -215,3 +215,11 @@ ffmpeg -y -r 15 -f image2pipe -vcodec ppm -i gource.ppm \
   -vcodec libx264 -preset medium -pix_fmt yuv420p \
   -crf 1 -threads 0 -bf 0 gource.mp4
 ```
+
+## Gource Visualization
+
+De ontwikkelhistorie van dit project in een film:
+
+<video src="https://raw.githubusercontent.com/itsdarklikehell/pockettracker/main/gource-720p.mp4" controls width="100%"></video>
+
+*De video wordt automatisch gegenereerd door de [Gource workflow](.github/workflows/gource.yml) bij elke push — rendered via [nbprojekt/gource-action@v1.3.0](https://github.com/marketplace/actions/gource-action) in 1080p. Het artifact is 30 dagen beschikbaar via Actions.*
