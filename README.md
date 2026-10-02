@@ -1,5 +1,11 @@
 # PocketTracker
 
+
+[![CI](https://github.com/itsdarklikehell/pockettracker/actions/workflows/ci.yml/badge.svg)](https://github.com/itsdarklikehell/pockettracker/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/itsdarklikehell/pockettracker)](LICENSE)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+
+
 <p align="center">
   <img src="docs/images/logo-dark.png" alt="PocketTracker" height="240">
   &nbsp;&nbsp;
