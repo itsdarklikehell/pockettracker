@@ -31,18 +31,18 @@ void AudioEngine::setSampleBuffers(int id, float* newL, float* newR, int newLen)
     samples[id]       = newL;
     samplesRight[id]  = newR;
     sampleLengths[id] = newLen;
+    touchSample(id);   // after the stores: see sampleGen
 }
 
-// Stop voices reading slot `id`'s buffers, then acquire sampleEditMutex. Every destructive op
+// Acquire sampleEditMutex and end every voice playing slot `id`. Every destructive op
 // below must hold the returned lock while mutating/freeing the slot's buffers: the audio thread
 // try_locks this mutex in its mix loop, so it skips one block (~10 ms silence) instead of reading
 // freed or half-edited memory. Without it, editing a sample that is audible at that moment
 // (background playback, or preview-then-edit) is a use-after-free crash.
 std::unique_lock<std::mutex> AudioEngine::beginSampleEdit(int id) {
-    for (int v = 0; v < MAX_VOICES; v++) {
-        if (voices[v].isActive && voices[v].sampleData == samples[id]) voices[v].stop();
-    }
-    return std::unique_lock<std::mutex>(sampleEditMutex);
+    std::unique_lock<std::mutex> lock(sampleEditMutex);
+    touchSample(id);
+    return lock;
 }
 
 int AudioEngine::getSampleLength(int id) {
@@ -150,9 +150,13 @@ void AudioEngine::getSampleWaveformRangeSource(int id, int startFrame, int endFr
 
 float AudioEngine::getSamplePlaybackPosition(int id) {
     if (id < 0 || id >= 256 || !samples[id] || sampleLengths[id] <= 0) return -1.0f;
+    // By slot and generation, not by pointer: a voice left over from the previous buffer is not
+    // playing this one, and a new buffer can land at the old one's freed address.
+    const uint32_t gen = sampleGen[id].load();
+    const VoiceView& view = voiceView();
     for (int v = 0; v < MAX_VOICES; v++) {
-        const Voice& voice = voices[v];
-        if (voice.isActive && !voice.isFadingOut && voice.sampleData == samples[id]) {
+        const VoiceView::Sampler& voice = view.sampler[v];
+        if (voice.active && !voice.fading && voice.instrId == id && voice.sampleGen == gen) {
             return (float)(voice.position / (double)sampleLengths[id]);
         }
     }
@@ -166,7 +170,7 @@ void AudioEngine::normalizeSample(int id, int startFrame, int endFrame) {
     // in-place ops below (fade/silence/reverse).
     std::lock_guard<std::mutex> lock(sampleEditMutex);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     if (startFrame >= endFrame) return;
     float* bufR = samplesRight[id];
     // Peak across BOTH channels so the same gain is applied to each — preserves the stereo image.
@@ -188,7 +192,7 @@ void AudioEngine::fadeInSample(int id, int startFrame, int endFrame) {
     if (id < 0 || id >= 256 || !samples[id]) return;
     std::lock_guard<std::mutex> lock(sampleEditMutex);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     int count  = endFrame - startFrame;
     if (count <= 0) return;
     float* bufR = samplesRight[id];
@@ -203,7 +207,7 @@ void AudioEngine::fadeOutSample(int id, int startFrame, int endFrame) {
     if (id < 0 || id >= 256 || !samples[id]) return;
     std::lock_guard<std::mutex> lock(sampleEditMutex);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     int count  = endFrame - startFrame;
     if (count <= 0) return;
     float* bufR = samplesRight[id];
@@ -218,7 +222,7 @@ void AudioEngine::silenceRegion(int id, int startFrame, int endFrame) {
     if (id < 0 || id >= 256 || !samples[id]) return;
     std::lock_guard<std::mutex> lock(sampleEditMutex);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     // ⚠️ An INVERTED window is reachable: `sampleStart` and `sampleEnd` are two independent free
     // 0-255 cells with nothing constraining one against the other, and the editor seeds its
     // selection from them. `endFrame - startFrame` is int and `sizeof(float)` is size_t, so a
@@ -234,7 +238,7 @@ void AudioEngine::reverseSample(int id, int startFrame, int endFrame) {
     if (id < 0 || id >= 256 || !samples[id]) return;
     std::lock_guard<std::mutex> lock(sampleEditMutex);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     // ⚠️ Same inverted window as silenceRegion. `std::reverse(first, last)` with `first > last`
     // never reaches `first == last`, so it swaps outward from both ends of the buffer.
     if (startFrame >= endFrame) return;
@@ -323,7 +327,7 @@ void AudioEngine::cropSample(int id, int startFrame, int endFrame) {
     if (id < 0 || id >= 256 || !samples[id]) return;
     auto editLock = beginSampleEdit(id);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     if (startFrame >= endFrame) return;
     int newLen = endFrame - startFrame;
     float* newL = new float[newLen];
@@ -334,15 +338,16 @@ void AudioEngine::cropSample(int id, int startFrame, int endFrame) {
         std::memcpy(newR, samplesRight[id] + startFrame, newLen * sizeof(float));
     }
     setSampleBuffers(id, newL, newR, newLen);
-    instrumentParams[id].startPoint = 0;
-    instrumentParams[id].endPoint   = 255;
+    instrumentParams.edit(id).startPoint = 0;
+    instrumentParams.edit(id).endPoint   = 255;
+    instrumentParams.publish(id);
 }
 
 void AudioEngine::deleteSampleRegion(int id, int startFrame, int endFrame) {
     if (id < 0 || id >= 256 || !samples[id]) return;
     auto editLock = beginSampleEdit(id);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     if (startFrame >= endFrame) return;
     int oldLen = sampleLengths[id];
     int newLen = oldLen - (endFrame - startFrame);
@@ -357,8 +362,9 @@ void AudioEngine::deleteSampleRegion(int id, int startFrame, int endFrame) {
         std::memcpy(newR + startFrame, samplesRight[id] + endFrame, (oldLen - endFrame) * sizeof(float));
     }
     setSampleBuffers(id, newL, newR, newLen);
-    instrumentParams[id].startPoint = 0;
-    instrumentParams[id].endPoint   = 255;
+    instrumentParams.edit(id).startPoint = 0;
+    instrumentParams.edit(id).endPoint   = 255;
+    instrumentParams.publish(id);
 }
 
 void AudioEngine::copyRegion(int id, int startFrame, int endFrame) {
@@ -368,7 +374,7 @@ void AudioEngine::copyRegion(int id, int startFrame, int endFrame) {
     // also stop voices playing this sample, and COPY must not cut an audible preview.
     std::unique_lock<std::mutex> editLock(sampleEditMutex);
     startFrame = std::max(0, startFrame);
-    endFrame   = std::min(sampleLengths[id], endFrame);
+    endFrame   = std::min(sampleLengths[id].load(), endFrame);
     if (startFrame >= endFrame) return;
     int len = endFrame - startFrame;
     delete[] sampleClipboard;
@@ -383,10 +389,7 @@ void AudioEngine::copyRegion(int id, int startFrame, int endFrame) {
     sampleClipboardLength = len;
 }
 
-// Prepare the sample-editor's LEFT/RIGHT/MONO source preview NATIVELY: the Kotlin side used
-// to pull the full left + right PCM into Java arrays (plus a third for the MONO average) —
-// up to 3x the sample size transiently on the capped Java heap, exactly the OOM class the
-// native load paths exist to avoid. Slot→slot copy in native memory instead.
+// Prepare the sample editor's LEFT/RIGHT/MONO source preview as a slot→slot copy in native memory.
 void AudioEngine::prepareSourcePreview(int dstId, int srcId, int mode) {
     if (dstId < 0 || dstId >= 256 || srcId < 0 || srcId >= 256 || dstId == srcId) return;
     // Stops voices reading the dst (scratch) slot and holds the edit mutex — which also
@@ -411,7 +414,7 @@ void AudioEngine::prepareSourcePreview(int dstId, int srcId, int mode) {
 void AudioEngine::pasteRegion(int id, int insertAt) {
     if (id < 0 || id >= 256 || !samples[id] || !sampleClipboard || sampleClipboardLength <= 0) return;
     auto editLock = beginSampleEdit(id);
-    insertAt = std::max(0, std::min(sampleLengths[id], insertAt));
+    insertAt = std::max(0, std::min(sampleLengths[id].load(), insertAt));
     int oldLen = sampleLengths[id];
     int clip   = sampleClipboardLength;
     int newLen = oldLen + clip;
@@ -430,8 +433,9 @@ void AudioEngine::pasteRegion(int id, int insertAt) {
         std::memcpy(newR + insertAt + clip, samplesRight[id] + insertAt, (oldLen - insertAt) * sizeof(float));
     }
     setSampleBuffers(id, newL, newR, newLen);
-    instrumentParams[id].startPoint = 0;
-    instrumentParams[id].endPoint   = 255;
+    instrumentParams.edit(id).startPoint = 0;
+    instrumentParams.edit(id).endPoint   = 255;
+    instrumentParams.publish(id);
 }
 
 int AudioEngine::getClipboardLength() {
@@ -716,7 +720,7 @@ void AudioEngine::applySampleFx(int id, int fxType, int fxValue, float sampleRat
             for (int i = 0; i < len; i++) buf[i] = drive.processMono(buf[i]);
         } else if (fxType == 3) { // EQ — apply preset slot (fxValue = slot 0-127)
             int slot = std::min(fxValue, 127);
-            const EqPresetBank& preset = eqPresets[slot];
+            const EqPresetBank& preset = eqPresets.staged(slot);
             EqModule eq;
             eq.reset(sampleRate);
             for (int b = 0; b < 3; b++) {
@@ -734,10 +738,8 @@ void AudioEngine::applySampleFx(int id, int fxType, int fxValue, float sampleRat
         LimiterModule lim;
         lim.reset();
         lim.setPreGain(1.0f + (limiterPreGain / 255.0f) * 3.0f);
-        // One call over the whole channel. `LimiterModule::process` goes a frame at a time because
-        // its buffer is INTERLEAVED and the two limiters must not read each other's samples; this
-        // buffer is de-interleaved mono, so the block API walks it directly. `ProcessBlock` carries
-        // nothing across calls but `peak_`, which the loop carried too — the output is identical.
+        // One call over the whole channel: this buffer is de-interleaved mono, so the block API
+        // walks it directly (`process` goes frame by frame only because its buffer is interleaved).
         lim.limL.ProcessBlock(buf, static_cast<size_t>(len), lim.preGain);
     };
 
@@ -759,17 +761,11 @@ int AudioEngine::findZeroCrossing(int id, int frame, int dir, int searchRadius, 
 
     // ── STEREO: what counts as a candidate, and how good it is ───────────────────────────────────
     //
-    // A stereo seam is only clean where BOTH channels are near zero, and the two channels of real
-    // audio almost never cross on the same frame — so "both cross here" as a requirement would find
-    // nothing and snap would silently stop working (the report's "there is going to be much less snap
-    // points"). Instead: the candidates are the frames where EITHER channel crosses, and the one that
-    // wins is the one whose WORST channel is quietest — `max(|L|, |R|)`, because the louder of the two
-    // steps is the click you hear. A true double crossing scores ~0 and beats everything, which is
-    // what makes this an improvement rather than a different answer.
-    //
-    // ⚠️ On a DUAL-MONO file (L == R — what `write_wav_mono` and every CHOP produce) every left
-    // crossing is a right crossing scoring 0, so the first one wins and the answer is bit-identical to
-    // the left-only search. The new path cannot regress the common case.
+    // Real channels rarely cross on the same frame, so "both cross" would find nothing. The
+    // candidates are frames where EITHER channel crosses, and the winner has the quietest WORST
+    // channel (`max(|L|, |R|)` — the louder step is the click). A true double crossing scores ~0.
+    // ⚠️ On DUAL-MONO (L == R, every CHOP) the first left crossing scores 0 and wins, matching the
+    // left-only search.
     const bool stereo = (mode == 2);
 
     auto val = [&](int i) -> float {
@@ -793,8 +789,8 @@ int AudioEngine::findZeroCrossing(int id, int frame, int dir, int searchRadius, 
     float bestScore = 0.0f;
     bool  found     = false;
 
-    // Returns true when the search can stop — which for a single signal is the FIRST candidate, the
-    // behaviour this has always had. Stereo keeps looking: a nearer candidate is not a better one.
+    // Returns true when the search can stop: the FIRST candidate for a single signal. Stereo keeps
+    // looking — a nearer candidate is not a better one.
     auto consider = [&](int i) {
         if (i < 1 || i >= len || !crosses(i)) return false;
         const float sc = score(i);
@@ -804,9 +800,8 @@ int AudioEngine::findZeroCrossing(int id, int frame, int dir, int searchRadius, 
 
     // dir > 0: forward only; dir < 0: backward only; dir == 0: nearest (both ways).
     // Directional search is seeded from the already-stepped `frame`, so the result is always at or
-    // past `frame` in the move direction — a marker can never snap back behind itself and stick (#8).
-    // Walking outward in distance order is also what breaks a stereo score tie in favour of the
-    // NEAREST candidate: `sc < bestScore` is strict.
+    // past `frame` in the move direction — a marker can never snap back behind itself and stick.
+    // Walking outward in distance order breaks a stereo score tie toward the NEAREST candidate.
     for (int d = 0; d <= searchRadius; d++) {
         if (dir >= 0 && consider(frame + d)) break;
         if (dir <= 0 && consider(frame - d)) break;
@@ -816,103 +811,151 @@ int AudioEngine::findZeroCrossing(int id, int frame, int dir, int searchRadius, 
 
 void AudioEngine::setEqBand(int slot, int band, int type, int freqHex, int gainHex, int qHex) {
     if (slot < 0 || slot >= 128 || band < 0 || band >= 3) return;
-    auto& b = eqPresets[slot].bands[band];
+    auto& b = eqPresets.edit(slot).bands[band];
     b.type   = type;
     b.freqHz = 20.0f * powf(1000.0f, freqHex / 255.0f);
     b.gainDb = gainHex / 10.0f - 12.0f;   // gainHex 0..240 → −12.0..+12.0 dB (0.1 dB/step)
     b.q      = 0.1f  * powf(100.0f,  qHex   / 255.0f);
     // The authored bytes, kept beside the conversion because a table morph interpolates THEM. This
     // is the only writer of either array — see audio-engine.h.
-    auto& h = eqPresetHex[slot];
+    auto& h = eqPresetHex.edit(slot);
     h.type[band] = type;
     h.freq[band] = freqHex;
     h.gain[band] = gainHex;
     h.q[band]    = qHex;
+    eqPresets.publish(slot);
+    eqPresetHex.publish(slot);
 }
 
 void AudioEngine::setInstrumentEqSlot(int instrId, int slot) {
     if (instrId < 0 || instrId >= 256) return;
+    InstrumentParams& ip = instrumentParams.edit(instrId);
     if (slot < 0 || slot >= 128) {
-        instrumentParams[instrId].eqActive = false;
-        return;
+        ip.eqActive = false;
+    } else {
+        const EqPresetBank& preset = eqPresets.staged(slot);
+        bool any = false;
+        for (int i = 0; i < 3; i++) {
+            ip.eqBands[i] = preset.bands[i];
+            if (preset.bands[i].type != 0) any = true;
+        }
+        ip.eqActive = any;
     }
-    const auto& preset = eqPresets[slot];
-    bool any = false;
-    for (int i = 0; i < 3; i++) {
-        instrumentParams[instrId].eqBands[i] = preset.bands[i];
-        if (preset.bands[i].type != 0) any = true;
-    }
-    instrumentParams[instrId].eqActive = any;
+    instrumentParams.publish(instrId);
 }
 
-void AudioEngine::setInstrumentSendLevels(int instrId, int reverbSend, int delaySend) {
+void AudioEngine::setProgram(int instrumentId, const songcore::Program& program,
+                             const int64_t* markers, int count) {
+    if (instrumentId < 0 || instrumentId >= songcore::PROGRAM_SLOTS) return;
+    ProgramRow& row = programs.edit(instrumentId);
+    const int n = (count < 0) ? 0
+                : (count > songcore::PROGRAM_SLICE_MARKERS ? songcore::PROGRAM_SLICE_MARKERS : count);
+    row.program = program;
+    for (int i = 0; i < n; ++i) row.markers[i] = markers[i];
+    row.program.sliceCount   = n;
+    row.program.sliceMarkers = nullptr;   // programView re-points it at the audio thread's own copy
+    programs.publish(instrumentId);
+}
+
+void AudioEngine::setInstrumentSendLevels(int instrId, int reverbHex, int delayHex) {
     if (instrId < 0 || instrId >= 256) return;
-    instrumentParams[instrId].reverbSend = reverbSend / 255.0f;
-    instrumentParams[instrId].delaySend  = delaySend  / 255.0f;
+    instrumentParams.edit(instrId).reverbSend = reverbHex / 255.0f;
+    instrumentParams.edit(instrId).delaySend  = delayHex  / 255.0f;
+    instrumentParams.publish(instrId);
 }
 
-void AudioEngine::setReverbParams(int feedbackHex, int dampHex, int wetHex, int decayHex,
-                                   int densityHex) {
-    reverbSend.setParams(feedbackHex, dampHex, decayHex, densityHex);
+void AudioEngine::setReverbParams(int feedbackHex, int dampHex, int wetHex, int sizeHex) {
+    busSettings.reverbDecay = feedbackHex; busSettings.reverbDamp = dampHex;
+    busSettings.reverbWet   = wetHex;      busSettings.reverbSize = sizeHex;
+    prepareReverb();
+    recordBus(BUS_REVERB_PARAMS);
     reverbReturnGain = wetHex / 255.0f;
 }
 
 void AudioEngine::setDelayParams(int timeOrSubdiv, int feedbackHex, bool syncMode, float bpm, int wetHex) {
-    if (syncMode) {
-        delaySend.setParamsSync(timeOrSubdiv, feedbackHex, bpm);
-    } else {
-        delaySend.setParamsFree(timeOrSubdiv, feedbackHex);
-    }
+    setDelayTime(timeOrSubdiv, syncMode, bpm);
+    setDelayFeedbackWet(feedbackHex, wetHex);
+}
+
+// The two halves on their own, because a take a TIM is driving owns the TIME and nothing else: a
+// globals push has to leave that alone while still carrying FDBK and WET through (engine_setup.h).
+void AudioEngine::setDelayTime(int timeOrSubdiv, bool syncMode, float bpm) {
+    busSettings.delayTime = timeOrSubdiv; busSettings.delaySync = syncMode; busSettings.delayBpm = bpm;
+    recordBus(BUS_DELAY_TIME);
+}
+
+void AudioEngine::setDelayFeedbackWet(int feedbackHex, int wetHex) {
+    busSettings.delayFeedback = feedbackHex; busSettings.delayWet = wetHex;
+    recordBus(BUS_DELAY_FEEDBACK);
     delayReturnGain = wetHex / 255.0f;
 }
 
 void AudioEngine::setDelayCharacter(bool pong, int toneHex, int wobbleHex) {
-    delaySend.setCharacter(pong, toneHex, wobbleHex);
+    busSettings.delayPong = pong; busSettings.delayTone = toneHex; busSettings.delayWobble = wobbleHex;
+    recordBus(BUS_DELAY_CHAR);
 }
 
 void AudioEngine::setDelayReverbSend(int sendHex) {
+    busSettings.delayReverbSend = sendHex; busSettings.pushed = true;
     delayToReverbSend = sendHex / 255.0f;
 }
 
 void AudioEngine::setReverbCharacter(int preHex, int widthHex, int modHex) {
-    reverbSend.setCharacter(preHex, widthHex, modHex);
+    busSettings.reverbPre = preHex; busSettings.reverbWidth = widthHex; busSettings.reverbMod = modHex;
+    prepareReverb();
+    recordBus(BUS_REVERB_CHAR);
 }
 
-void AudioEngine::setReverbAlgo(int algo) { reverbSend.setAlgo(algo); }
+void AudioEngine::setReverbAlgo(int algo) {
+    busSettings.reverbAlgo = algo;
+    prepareReverb();
+    recordBus(BUS_REVERB_ALGO);
+}
 
-void AudioEngine::setReverbInputEq(int slot) { applyEqPresetToModule(reverbSend.inputEq, slot); }
+void AudioEngine::setReverbInputEq(int slot) {
+    busSettings.reverbInputEq = slot;
+    recordBus(BUS_REVERB_INEQ);
+}
 
-void AudioEngine::setDelayInputEq(int slot) { applyEqPresetToModule(delaySend.inputEq, slot); }
+void AudioEngine::setDelayInputEq(int slot) {
+    busSettings.delayInputEq = slot;
+    recordBus(BUS_DELAY_INEQ);
+}
 
-void AudioEngine::setMasterEqSlot(int slot) { applyEqPresetToModule(masterChain.masterEq, slot); }
+void AudioEngine::setMasterEqSlot(int slot) {
+    busSettings.masterEqSlot = slot;
+    recordBus(BUS_MASTER_EQ);
+}
 
 void AudioEngine::setInstrumentParams(int instrumentId, int start, int end, bool rev, int loop, int loopSt, int loopEn,
                                       int drv, int crsh, int dwn, int fType, int fCut, int fRes) {
     if (instrumentId < 0 || instrumentId >= 256) return;
 
-    instrumentParams[instrumentId].startPoint = start;
-    instrumentParams[instrumentId].endPoint = end;
-    instrumentParams[instrumentId].reverse = rev;
-    instrumentParams[instrumentId].loopMode = loop;
-    instrumentParams[instrumentId].loopStart = loopSt;
-    instrumentParams[instrumentId].loopEnd = loopEn;
-    instrumentParams[instrumentId].drive = drv;
-    instrumentParams[instrumentId].crush = crsh;
-    instrumentParams[instrumentId].downsample = dwn;
-    instrumentParams[instrumentId].filterType = fType;
-    instrumentParams[instrumentId].filterCut = fCut;
-    instrumentParams[instrumentId].filterRes = fRes;
+    instrumentParams.edit(instrumentId).startPoint = start;
+    instrumentParams.edit(instrumentId).endPoint = end;
+    instrumentParams.edit(instrumentId).reverse = rev;
+    instrumentParams.edit(instrumentId).loopMode = loop;
+    instrumentParams.edit(instrumentId).loopStart = loopSt;
+    instrumentParams.edit(instrumentId).loopEnd = loopEn;
+    instrumentParams.edit(instrumentId).drive = drv;
+    instrumentParams.edit(instrumentId).crush = crsh;
+    instrumentParams.edit(instrumentId).downsample = dwn;
+    instrumentParams.edit(instrumentId).filterType = fType;
+    instrumentParams.edit(instrumentId).filterCut = fCut;
+    instrumentParams.edit(instrumentId).filterRes = fRes;
     // ⚠️ A push of the instrument's own window ENDS any exact-frame window on this slot. That is what
     // makes the sample editor's audition safe to arm: whatever else happens, the next ordinary push —
     // the preview's own restore, an edit on the INSTRUMENT screen, a project load — takes it away, and
     // no caller has to know it was ever there.
-    instrumentParams[instrumentId].startFrame = -1;
-    instrumentParams[instrumentId].endFrame   = -1;
+    instrumentParams.edit(instrumentId).startFrame = -1;
+    instrumentParams.edit(instrumentId).endFrame   = -1;
+    instrumentParams.publish(instrumentId);
 }
 
 void AudioEngine::setInstrumentFrameWindow(int instrumentId, int startFrame, int endFrame) {
     if (instrumentId < 0 || instrumentId >= 256) return;
     const bool armed = (startFrame >= 0 && endFrame > startFrame);
-    instrumentParams[instrumentId].startFrame = armed ? startFrame : -1;
-    instrumentParams[instrumentId].endFrame   = armed ? endFrame   : -1;
+    instrumentParams.edit(instrumentId).startFrame = armed ? startFrame : -1;
+    instrumentParams.edit(instrumentId).endFrame   = armed ? endFrame   : -1;
+    instrumentParams.publish(instrumentId);
 }

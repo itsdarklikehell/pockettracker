@@ -9,7 +9,7 @@ namespace pt::ui {
 
 namespace {
 
-// ─── Geometry (MixerModule.kt, verbatim) ─────────────────────────────────────────────────────────
+// ─── Geometry ────────────────────────────────────────────────────────────────────────────────────
 constexpr int METER_SPACING  = 53;
 constexpr int FIRST_METER_X  = 10;
 
@@ -18,11 +18,8 @@ constexpr int TRACK_METER_H   = 155;
 
 constexpr int MASTER_METER_H  = 200;   // taller than a track's; same top
 
-// Background left between a meter's outline and the text row beside it — the same 3px a row already
-// pads its glyphs with, so the meter reads as one more row edge. Every text row that borders a meter
-// derives its baseline from the two helpers below, which is what keeps tracks, master and sends
-// clearing their outline by the identical amount; a lit cursor cell, 3px taller than its glyphs on
-// each side, still lands clear of it.
+// Background between a meter's outline and the text beside it — the 3px a row pads its glyphs with.
+// Every text row bordering a meter takes its baseline from the two helpers below, so all clear it alike.
 constexpr int METER_TEXT_GAP = 3;
 
 /** Text baseline for a row sitting UNDER a meter of height `meter_h` that starts at `meter_top`. */
@@ -43,9 +40,16 @@ constexpr int SEND_METER_H   = 112;
 constexpr int SEND_HEADER_Y  = text_y_above(SEND_METER_TOP);                 // 212
 constexpr int SEND_VALUE_Y   = text_y_under(SEND_METER_TOP, SEND_METER_H);   // 353
 
-// Every stereo pair — tracks, master and sends alike — is two slim bars with a 1px gutter.
+// The outline grows OUT sideways but IN top and bottom, where the text rows clear the meter's outer
+// edge by a derived gap that growing outward would eat.
+constexpr int METER_BORDER = 2;
+// What the inward half costs the trough: one row off the top, one off the bottom.
+constexpr int METER_INSET = METER_BORDER - 1;
+
+// Every stereo pair is two slim bars; the gutter between is left unpainted out of the outline's
+// rect, so the pair reads as one framed object with a wall down it.
 constexpr int BAR_W   = 20;
-constexpr int BAR_SEP = 1;
+constexpr int BAR_SEP = METER_BORDER;
 
 constexpr int MASTER_X = FIRST_METER_X + 8 * METER_SPACING;   // 434
 
@@ -91,7 +95,7 @@ Argb segment_color(int dy_from_bottom, int total_h, const Theme& t) {
     return t.meterLow;
 }
 
-/** A peak array the feed has not filled is silence — which is what lets ptshot draw this screen. */
+/** A peak array the feed has not filled is silence. */
 float peak_at(const float* peaks, int index) { return peaks ? peaks[index] : 0.0f; }
 
 }  // namespace
@@ -102,13 +106,8 @@ void MixerModule::draw(Canvas& c, int x, int y, const MixerState& s) {
     const Theme&             t = s.theme;
     const songcore::Project& p = s.project;
 
-    // ⚠️ The hold advances once per PEAK REFRESH, not once per draw — see the header. A redraw caused by
-    // a cursor move (which happens between polls) must not age the peak markers.
-    //
-    // It ages by as many refreshes as the version has moved, not by one: the feed replays the refreshes
-    // that went by while this screen was away (or under an overlay), and a marker caught mid-fall has to
-    // land where that clock says rather than resume from where it parked. Unsigned wrap makes the
-    // `-1` sentinel give exactly one step on the first draw.
+    // ⚠️ The hold ages once per PEAK REFRESH, not per draw (see the header), and by as many refreshes
+    // as the version moved. Unsigned wrap makes the `-1` sentinel give one step on the first draw.
     const unsigned steps = std::min(s.peaksVersion - lastPeaksVersion_, MAX_HOLD_STEPS);
     lastPeaksVersion_    = s.peaksVersion;
 
@@ -120,9 +119,7 @@ void MixerModule::draw(Canvas& c, int x, int y, const MixerState& s) {
         const int  mX    = x + FIRST_METER_X + i * METER_SPACING;
         const bool isSel = (s.mixerMasterRow == 0 && s.cursorColumn == i);
 
-        // Muted, or unsoloed while another channel is soloed, or with a SEND RETURN soloed over the top
-        // of it — either way this strip is contributing nothing to what you hear, and the meter and the
-        // fader value both say so.
+        // Muted, unsoloed under another solo, or under a soloed send return: meter and value say so.
         const bool audible = track_audible(p, i) && dry_audible(p);
 
         draw_stereo_meter(c, mX, y + TRACK_METER_TOP, TRACK_METER_H, peak_at(s.trackPeaks, i * 2),
@@ -134,9 +131,8 @@ void MixerModule::draw(Canvas& c, int x, int y, const MixerState& s) {
     }
 
     // ── The master meter ─────────────────────────────────────────────────────────────────────────
-    // ⚠️ Selected on COLUMN ALONE, not on (row, column): the master strip's four rows all live in
-    // column 8, so the meter is lit for every one of them. That is Kotlin's `masterSel`, and it is what
-    // tells you which strip you are editing while the cursor is down on LIM.
+    // ⚠️ Selected on COLUMN ALONE: all four master rows live in column 8, so the meter stays lit and
+    // says which strip you are editing while the cursor is down on LIM.
     const bool masterSel = (s.cursorColumn == 8);
     draw_stereo_meter(c, x + MASTER_X, y + TRACK_METER_TOP, MASTER_METER_H,
                       peak_at(s.masterPeaks, 0), peak_at(s.masterPeaks, 1), masterSel,
@@ -165,9 +161,9 @@ void MixerModule::draw(Canvas& c, int x, int y, const MixerState& s) {
     // The two headers are these cells' LABELS — they sit above rather than beside, but they do the
     // same job the label does on every other screen: say which of the two the cursor is on.
     c.draw_text("REV", revCX - (3 * CHAR_W) / 2, y + SEND_HEADER_Y,
-                revSendSel ? t.textCursor : t.textParam, CHAR_SPACING, FONT_SCALE);
+                revSendSel ? cursor_mark_ink(t) : t.textParam, CHAR_SPACING, FONT_SCALE);
     c.draw_text("DEL", delCX - (3 * CHAR_W) / 2, y + SEND_HEADER_Y,
-                delSendSel ? t.textCursor : t.textParam, CHAR_SPACING, FONT_SCALE);
+                delSendSel ? cursor_mark_ink(t) : t.textParam, CHAR_SPACING, FONT_SCALE);
 
     draw_cursor_cell(c, hex2(p.reverbWet), revCX - (2 * CHAR_W) / 2, y + SEND_VALUE_Y, revSendSel,
                      revAudible ? t.textValue : t.textEmpty, t);
@@ -186,19 +182,17 @@ void MixerModule::draw(Canvas& c, int x, int y, const MixerState& s) {
     const bool depthSel = masterSel && s.mixerMasterRow == 2;
     const bool limSel   = masterSel && s.mixerMasterRow == 3;
 
-    // Four label/value rows, painted as they are on every other screen: the label says which row, the
-    // value is the cell the cursor fills. ⚠️ The METER stays lit for all four (`masterSel` above) —
-    // that is what says the master strip is the one being edited, and it is a different question from
-    // which of its four rows the cursor is down on.
+    // Label/value rows as on every other screen. ⚠️ The meter stays lit for all four (`masterSel`):
+    // which strip is a different question from which row.
     const auto master_row = [&](const char* label, int row_y, const std::string& value, bool sel) {
-        c.draw_text(label, x + MSTR_LABEL_X, y + row_y, sel ? t.textCursor : t.textParam,
+        c.draw_text(label, x + MSTR_LABEL_X, y + row_y, sel ? cursor_mark_ink(t) : t.textParam,
                     CHAR_SPACING, FONT_SCALE);
         draw_cursor_cell(c, value, x + MSTR_VALUE_X, y + row_y, sel, t.textValue, t);
     };
 
     master_row("MIX", MROW0_Y, hex2(p.masterVolume), mixSel);
 
-    c.draw_text("EQ", x + MSTR_LABEL_X, y + MROW1_Y, eqSel ? t.textCursor : t.textParam,
+    c.draw_text("EQ", x + MSTR_LABEL_X, y + MROW1_Y, eqSel ? cursor_mark_ink(t) : t.textParam,
                 CHAR_SPACING, FONT_SCALE);
     draw_eq_cell(c, x + MSTR_VALUE_X, y + MROW1_Y, p.masterEqSlot, eqSel, t);
 
@@ -209,16 +203,21 @@ void MixerModule::draw(Canvas& c, int x, int y, const MixerState& s) {
 void MixerModule::draw_stereo_meter(Canvas& c, int x, int y, int h, float level_l, float level_r,
                                     bool is_selected, bool is_muted, const Theme& t, int peak_idx_l,
                                     int peak_idx_r, unsigned steps) {
-    const Argb border = is_selected ? t.textCursor : t.meterBorder;
+    const Argb border = is_selected ? t.rowCursor : t.meterBorder;
     const int  rX     = x + BAR_W + BAR_SEP;
 
-    // One border around the pair (both bars + the gutter between them), then each channel's trough.
-    c.fill_rect(x - 1, y - 1, BAR_W + BAR_SEP + BAR_W + 2, h + 2, border);
-    c.fill_rect(x, y, BAR_W, h, t.meterBackground);
-    c.fill_rect(rX, y, BAR_W, h, t.meterBackground);
+    // ⚠️ `y`/`h` stay the meter's OUTER box — the text rows either side are placed off it — and the
+    // trough is what everything drawn inside measures against.
+    const int inY = y + METER_INSET;
+    const int inH = h - 2 * METER_INSET;
 
-    const int lhPx = level_to_height_px(level_l, h);
-    const int rhPx = level_to_height_px(level_r, h);
+    // One border around the pair (both bars + the gutter between them), then each channel's trough.
+    c.fill_rect(x - METER_BORDER, y - 1, BAR_W + BAR_SEP + BAR_W + 2 * METER_BORDER, h + 2, border);
+    c.fill_rect(x, inY, BAR_W, inH, t.meterBackground);
+    c.fill_rect(rX, inY, BAR_W, inH, t.meterBackground);
+
+    const int lhPx = level_to_height_px(level_l, inH);
+    const int rhPx = level_to_height_px(level_r, inH);
 
     // Replaying a step with the level held is what the missed refreshes did anyway: past the first, the
     // fall is a function of the counter alone.
@@ -229,13 +228,13 @@ void MixerModule::draw_stereo_meter(Canvas& c, int x, int y, int h, float level_
 
     // A muted track shows an empty trough — its peaks are forced to zero above, so the marker falls too.
     if (!is_muted) {
-        draw_segmented_bar(c, x, y, h, lhPx, t);
-        draw_segmented_bar(c, rX, y, h, rhPx, t);
+        draw_segmented_bar(c, x, inY, inH, lhPx, t);
+        draw_segmented_bar(c, rX, inY, inH, rhPx, t);
     }
 
     // After the bars, so a marker resting on the trough is still visible.
-    draw_peak_marker(c, x, y, h, peak_idx_l, t);
-    draw_peak_marker(c, rX, y, h, peak_idx_r, t);
+    draw_peak_marker(c, x, inY, inH, peak_idx_l, t);
+    draw_peak_marker(c, rX, inY, inH, peak_idx_r, t);
 }
 
 void MixerModule::draw_segmented_bar(Canvas& c, int x, int y, int h, int bar_h_px,
@@ -301,10 +300,8 @@ CursorContext MixerModule::cursor_context(const MixerState& s) const {
     if (s.cursorColumn == 8) {
         switch (s.mixerMasterRow) {
             case 1:
-                // ⚠️ The −1 is passed THROUGH here, so an unassigned master EQ really is `isEmpty` and A
-                // inserts slot 0. (The INSTRUMENT screen's EQ cell substitutes 0 before the call and so
-                // can never be empty — its `canInsert` is inert, and A there jumps to slot 1. Same cell,
-                // two behaviours; both are Kotlin's, and ptinput pins both.)
+                // ⚠️ The −1 is passed THROUGH, so an unassigned master EQ is `isEmpty` and A inserts
+                // slot 0. (INSTRUMENT's EQ cell substitutes 0 first, so A there jumps to slot 1.)
                 return cc::hex_byte(p.masterEqSlot < 0 ? -1 : p.masterEqSlot, 0, 127,
                                     /*empty_value=*/-1, /*can_delete=*/true, /*can_insert=*/true);
             case 2:
@@ -320,6 +317,41 @@ CursorContext MixerModule::cursor_context(const MixerState& s) const {
     // Rows 2 and 3 outside column 8: unreachable by navigation, and answered honestly rather than
     // guessed at. This is what keeps the (row, column) pair safe as two independent ints.
     return cc::none();
+}
+
+// ─── What the cursor is standing on, by NAME ─────────────────────────────────────────────────────
+//
+// ⚠️ The same (row, column) table `cursor_context` above reads, answering the other question. The two
+// must agree about which cells exist: a cell this names but that one calls `none()` would be a
+// mapping onto something the user cannot edit by hand.
+
+songcore::MapTarget MixerModule::map_target(const MixerState& s) const {
+    using songcore::MapDestId;
+    const int col = s.cursorColumn;
+
+    // ⚠️ The cursor here is two INDEPENDENT ints over a grid that is not rectangular, so the pair can
+    // land where nothing is drawn — and `col` indexes `tracks` a line below. The row arms take care
+    // of the gaps; this one takes care of the ends.
+    if (col < 0 || col > 8) return {};
+
+    if (s.mixerMasterRow == 0)
+        return col < 8 ? songcore::MapTarget{MapDestId::TRACK_VOL, static_cast<uint8_t>(col)}
+                       : songcore::MapTarget{MapDestId::MASTER_VOL, 0};
+
+    // The two send returns. Their WET is the mixer's; everything else about those buses is EFFECTS'.
+    if (s.mixerMasterRow == 1 && col == 0) return {MapDestId::REV_WET, 0};
+    if (s.mixerMasterRow == 1 && col == 1) return {MapDestId::DLY_WET, 0};
+
+    if (col == 8) {
+        switch (s.mixerMasterRow) {
+            // ⚠️ Row 2 is ONE cell drawing whichever of the two master effects is switched on, so the
+            // name it answers with depends on the project — not on the cursor.
+            case 2: return {s.project.masterBusFx == 0 ? MapDestId::OTT_DEPTH : MapDestId::DUST_DEPTH, 0};
+            case 3: return {MapDestId::LIMIT_PRE, 0};
+            default: break;   // row 1 is the master EQ SLOT — a choice of preset, not a value to sweep
+        }
+    }
+    return {};
 }
 
 // ─── Input ───────────────────────────────────────────────────────────────────────────────────────
@@ -342,15 +374,15 @@ MixerInputResult MixerModule::handle_input(songcore::Project& p, int cursor_row,
                 p.masterEqSlot = 0;
                 return {true};
             default:
-                break;   // …and fall through, exactly as Kotlin's inner `when` does
+                break;   // …and fall through to the value arms
         }
     }
 
     if (action.type != ActionType::SET_VALUE) return {false};
     const int v = clamp(action.value, 0, 255);
 
-    // The arm ORDER is Kotlin's, and it is load-bearing: `row == 0` (master volume) must be tested
-    // after `row == 0 && column < 8` (a track), or every track volume would write the master's.
+    // ⚠️ Arm order is load-bearing: `row == 0` (master volume) must be tested after `row == 0 &&
+    // column < 8` (a track), or every track volume would write the master's.
     if (cursor_row == 1 && cursor_column == 0) { p.reverbWet = v; return {true}; }
     if (cursor_row == 1 && cursor_column == 1) { p.delayWet = v; return {true}; }
     if (cursor_row == 0 && cursor_column < 8) {
@@ -359,8 +391,7 @@ MixerInputResult MixerModule::handle_input(songcore::Project& p, int cursor_row,
     }
     if (cursor_row == 0) { p.masterVolume = v; return {true}; }
 
-    // Rows 2/3 are reachable only in column 8 (the cursor context is `none()` anywhere else, so no
-    // SET_VALUE can ever be produced there) — which is why these two need no column test, as in Kotlin.
+    // Rows 2/3 exist only in column 8 (`none()` elsewhere, so no SET_VALUE there): no column test.
     if (cursor_row == 2) {
         if (p.masterBusFx == 0) p.ottDepth = v;
         else                    p.dustDepth = v;

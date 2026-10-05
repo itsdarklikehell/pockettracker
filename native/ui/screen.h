@@ -2,8 +2,8 @@
 
 // ─── Screens ─────────────────────────────────────────────────────────────────────────────────────
 //
-// A 1:1 port of core/data/ScreenType.kt. The labels are drawn (screen headers, the navigation map),
-// so they are part of the UI's contract, not decoration.
+// The labels are drawn (screen headers, the navigation map), so they are part of the UI's contract.
+// Grid positions are in ui/navigation.h.
 
 #include <string>
 
@@ -17,25 +17,23 @@ enum class ScreenType {
     INSTRUMENT,
     TABLE,
 
-    // Context screens — appear in specific columns
-    PROJECT,    // top of all columns
-    GROOVE,     // row 2, phrase column
-    SCALE,      // row 1, phrase column
-    MODS,       // row 2, instrument column
-    INST_POOL,  // row 1, instrument column
-    MIXER,      // row 4, all columns
-    EFFECTS,    // row 5, all columns
+    // Context screens — off the main row (ui/navigation.h)
+    PROJECT,
+    GROOVE,
+    SCALE,
+    MODS,
+    INST_POOL,
+    MIXER,      // shared by all columns
+    EFFECTS,    // shared by all columns
 
     // Popup screens — replace the main view temporarily
     FILE_BROWSER,
     SETTINGS,
     SAMPLE_EDITOR,
 
-    // ⚠️ MIDI is APPENDED, not slotted in beside SETTINGS where it belongs by kind. This enum has no
-    // counterpart in ScreenType.kt any more (Phase E deleted it), but `screen_column()` and the nav
-    // grid read these by name while `ptdispatch`/`ptshot` name them in TEXT — so the ordering is free
-    // and the append is merely the habit that keeps it free.
-    MIDI        // reached from PROJECT > MIDI; not on the R+DPAD grid (plan §8.1)
+    // The order is free (screens are named, not numbered, everywhere) and new ones are appended.
+    MIDI,       // reached from PROJECT > MIDI; not on the R+DPAD grid
+    MIDI_MAP    // …and from MIDI > MAPPING. Not on the grid either
 };
 
 inline const char* screen_label(ScreenType s) {
@@ -56,16 +54,14 @@ inline const char* screen_label(ScreenType s) {
         case ScreenType::SETTINGS:      return "SETTINGS";
         case ScreenType::SAMPLE_EDITOR: return "SAMPLE EDITOR";
         case ScreenType::MIDI:          return "MIDI";
+        case ScreenType::MIDI_MAP:      return "MIDI MAPPING";
     }
     return "";
 }
 
 /**
- * The navigation map's cell label — NavigationMapModule.getScreenLabel().
- *
- * Deliberately NOT unique: SCALE and SONG are both "S", and PROJECT / PHRASE / INST_POOL are all "P".
- * The cell's COLUMN disambiguates it (the map only ever draws a screen in its own column), so the
- * label is a mnemonic, not an identifier — and it must stay one char wide to fit the 23px cell.
+ * The navigation map's cell label. Deliberately NOT unique (SCALE and SONG are both "S"): the map draws
+ * a screen only in its own column, which disambiguates. One char, to fit the 23 px cell.
  */
 inline const char* screen_short_label(ScreenType s) {
     switch (s) {
@@ -85,6 +81,7 @@ inline const char* screen_short_label(ScreenType s) {
         case ScreenType::SETTINGS:      return "SE";
         case ScreenType::SAMPLE_EDITOR: return "SE";
         case ScreenType::MIDI:          return "MI";
+        case ScreenType::MIDI_MAP:      return "MM";
     }
     return "";
 }

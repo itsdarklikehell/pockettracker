@@ -5,7 +5,10 @@
 #include <string>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include "audio-defs.h"
+#include "songcore/program.h"   // NoteOnPayload — a queued note carries it until the trigger
+#include "table-lanes.h"
 
 // ===================================
 // SOUNDFONT INFRASTRUCTURE (TinySoundFont)
@@ -19,9 +22,13 @@ struct tsf;
 // ⚠️ `SfBigBlock g_sfBig[MAX_SOUNDFONTS + 2]` in soundfont-voice.cpp sizes off this.
 static const int MAX_SOUNDFONTS = 12;
 
+// ⚠️ **The audio thread reads `handle` and `gen` and nothing else; every other field is the UI's.**
+// It takes no lock: a handle it loaded stays valid until its block ends, because `freeSoundfontSlot`
+// swaps the pointer out and waits for that block boundary before `tsf_close`. A voice records `gen`
+// when it is armed, and one whose slot has been freed since is detached at the top of the next block.
 struct SoundfontEntry {
-    tsf* handle = nullptr;
-    std::mutex mutex;            // Protects handle from concurrent audio/JNI access
+    std::atomic<tsf*>     handle{nullptr};
+    std::atomic<uint32_t> gen{0};  // bumped by every free
     int instrumentId = -1;       // Which Instrument slot owns this (-1 = free)
     // ⚠️ **The IDENTITY of a slot is the path AND the bank AND the preset**, because what is loaded
     // is one preset trimmed out of the file rather than the file. Two instruments on the same .sf2 at
@@ -87,6 +94,18 @@ struct ScheduledNote {
     int  sfPreset    = 0;       // SF2 preset number within bank (0-127)
     float detuneSemitones = 0.0f; // SF: static fine pitch offset in semitones (instrument detune)
 
+    // ── Deferred resolution: the instrument as a NUMBER ──────────────────────────────────────────
+    // ⚠️ **A NOTE IS QUEUED ABOUT TWO PHRASES BEFORE IT SOUNDS.** When `instrumentId >= 0` every
+    // field above is still UNSET and gets derived at the trigger instead, from the engine's program
+    // table — which is what lets a table row name a different instrument on the hit itself.
+    // -1 means the note arrived already derived (previews, retrigger, MIDI in, the file browser).
+    int instrumentId = -1;
+    songcore::NoteOnPayload noteOn{};   // the note-level half: pitch, velocity, pan, PSL/PBN/vibrato
+    TableCarry carry{};                 // filled at the trigger by the INS walk; empty otherwise
+    int  tempo        = 120;            // the tempo the note was SCHEDULED at — its tick→frame scale
+    bool rootAudition = false;          // INSTRUMENT-screen root preview; the sequencer never sets it
+    uint32_t gen = 0;                   // stamped by the queue, never by a caller — see CancelLedger
+
     // For priority queue sorting (earliest frame first)
     bool operator>(const ScheduledNote& other) const {
         return targetFrame > other.targetFrame;
@@ -95,21 +114,20 @@ struct ScheduledNote {
 
 // Scheduled kill event (for Kill effect K00, soft note-off for ADSR release, and a live key let go of)
 //
-// ⚠️ **ONE `mode`, NOT A SECOND BOOL BESIDE `softKill`.** Two bools can encode a state that means
-// nothing (hard AND key-release), and the dispatch would have to pick a winner somewhere; an enum
-// cannot be put into that state at all. Same rule the repo applies to every "derive it from the data"
-// case — the numbers below are internal to the engine and unrelated to event.h's NOTE_OFF_* wire
-// values, which is why the consumer translates rather than casts.
+// ⚠️ ONE `mode`, NOT TWO BOOLS: two bools could encode a meaningless state (hard AND key-release).
+// These numbers are the engine's own, unrelated to event.h's NOTE_OFF_* — the consumer translates.
 enum KillMode : uint8_t {
     KILL_HARD    = 0,   // K00 / killTrack — declick fade, whatever the instrument is
     KILL_SOFT    = 1,   // KIL's soft note-off — ADSR release, else a declick fade
-    KILL_KEY_OFF = 2,   // a KEY released (MIDI in, plan §4.1) — a one-shot IGNORES it and plays out
+    KILL_KEY_OFF = 2,   // a KEY released (MIDI in) — a one-shot IGNORES it and plays out
+    KILL_CUT     = 3,   // a held audition let go of — KILL_FADE_SAMPLES and gone, no release tail at all
 };
 
 struct ScheduledKill {
     int64_t targetFrame;     // Exact audio frame to trigger kill
     int trackId;             // Which track to kill (0-7)
     KillMode mode = KILL_HARD;
+    uint32_t gen = 0;        // stamped by the queue, never by a caller — see CancelLedger
 
     // For priority queue sorting (earliest frame first)
     bool operator>(const ScheduledKill& other) const {
@@ -117,19 +135,84 @@ struct ScheduledKill {
     }
 };
 
+// A live edit rolls one track's lookahead back and drops what that track had already queued from
+// the rollback frame on. The drop is LAZY: the UI only records "generation g of lane L ended at frame
+// F" here, and the audio thread skips an entry at drain time when a cancel issued after it was queued
+// reaches its frame. Nothing walks or rebuilds the heap, and the UI holds the queue mutex for a push
+// and nothing longer — so the audio thread, which drains under the same mutex, never waits on a
+// rebuild the UI thread was preempted in the middle of.
+//
+// ⚠️ The check scans every cancel since the entry's generation, not just the latest: two rollbacks
+// at different frames both bound what they threw away, and a note queued between them is kept.
+// The history is a ring of HISTORY cancels per lane; an entry that outlives more than that is treated
+// as cancelled. A kept entry drains before the next phrase boundary, so reaching that takes HISTORY
+// edits on one track inside one phrase.
+class CancelLedger {
+public:
+    static constexpr int LANES   = 10;   // tracks 0-8 (8 is the preview lane) + one for trackId -1
+    static constexpr int HISTORY = 64;   // a power of two: the slot is `gen & (HISTORY - 1)`
+
+    static int lane(int trackId) { return (trackId >= 0 && trackId < LANES - 1) ? trackId : LANES - 1; }
+
+    uint32_t current(int trackId) const { return gen_[lane(trackId)].load(std::memory_order_relaxed); }
+
+    // UI thread. `trackId < 0` ends every lane's generation, the global one included.
+    void cancel(int64_t fromFrame, int trackId) {
+        if (trackId < 0) { for (int l = 0; l < LANES; ++l) cancelLane(l, fromFrame); return; }
+        cancelLane(lane(trackId), fromFrame);
+    }
+
+    // Audio thread. True when a cancel issued after generation `gen` covers `targetFrame`.
+    bool cancelled(uint32_t gen, int trackId, int64_t targetFrame) const {
+        const int l = lane(trackId);
+        const uint32_t now = gen_[l].load(std::memory_order_acquire);
+        if (now - gen > (uint32_t)HISTORY) return true;
+        for (uint32_t g = gen; g != now; ++g)
+            if (from_[l][g & (HISTORY - 1)].load(std::memory_order_relaxed) <= targetFrame) return true;
+        return false;
+    }
+
+private:
+    void cancelLane(int l, int64_t fromFrame) {
+        const uint32_t g = gen_[l].load(std::memory_order_relaxed);
+        from_[l][g & (HISTORY - 1)].store(fromFrame, std::memory_order_relaxed);
+        gen_[l].store(g + 1, std::memory_order_release);   // publishes the slot write above
+    }
+    std::atomic<uint32_t> gen_[LANES]{};
+    std::atomic<int64_t>  from_[LANES][HISTORY]{};
+};
+
+/** A vector with room for the queue's typical load, to seed a heap with — see NoteQueue's constructor. */
+template <typename T>
+inline std::vector<T> reserved() {
+    std::vector<T> v;
+    v.reserve(64);
+    return v;
+}
+
 // Thread-safe note queue
-// Audio callback pops notes, Kotlin thread pushes notes
+// Audio callback pops notes; the UI thread pushes notes, and so does the audio thread itself for a
+// live key (from inside its own drain, before the block's drainUntil — never from another thread
+// than those two).
 class NoteQueue {
 private:
     // Min-heap: earliest targetFrame is always on top
     std::priority_queue<ScheduledNote, std::vector<ScheduledNote>, std::greater<ScheduledNote>> queue;
     std::mutex mutex;
+    CancelLedger cancels;
 
 public:
+    // The heap's storage is reserved once: a live key schedules from INSIDE the audio callback, and a
+    // push that grew the vector there would be an allocation on the audio thread. 64 is the same
+    // typical bound the per-block drain buffers use; past it the vector grows, once.
+    NoteQueue() : queue(std::greater<ScheduledNote>(), reserved<ScheduledNote>()) {}
+
     // Schedule a note to be played at exact frame
     void schedule(const ScheduledNote& note) {
         std::lock_guard<std::mutex> lock(mutex);
-        queue.push(note);
+        ScheduledNote stamped = note;
+        stamped.gen = cancels.current(note.trackId);
+        queue.push(stamped);
         // LOGT, not LOGD: the audio callback takes this mutex once per block (drainUntil), so
         // an always-on logging syscall while holding it is a priority-inversion / dropout hazard.
         LOGT("📅 Scheduled note: frame=%lld, sample=%d, track=%d, freq=%.2f",
@@ -139,10 +222,12 @@ public:
     // Drain every note with targetFrame <= maxFrame into `out` (ascending frame order, since the
     // heap pops earliest-first) under a SINGLE lock. Lets the audio callback dispatch a whole
     // block's worth of notes without taking this mutex once per frame. `out` is appended to.
+    // A note a rollback cancelled is popped here and goes nowhere.
     void drainUntil(int64_t maxFrame, std::vector<ScheduledNote>& out) {
         std::lock_guard<std::mutex> lock(mutex);
         while (!queue.empty() && queue.top().targetFrame <= maxFrame) {
-            out.push_back(queue.top());
+            const ScheduledNote& n = queue.top();
+            if (!cancels.cancelled(n.gen, n.trackId, n.targetFrame)) out.push_back(n);
             queue.pop();
         }
     }
@@ -156,21 +241,14 @@ public:
         LOGD("🗑️ Note queue cleared");
     }
 
-    // Clear only notes scheduled at or after fromFrame (keeps earlier notes intact).
+    // Drop the notes already queued at or after fromFrame (earlier ones play). O(1), no lock: the
+    // notes stay in the heap and are skipped when drained — see CancelLedger.
     //
     // ⚠️ `trackId >= 0` clears ONE track's, and the sequencer needs that: the eight song tracks each
     // roll their lookahead back to their own phrase boundary, so a live edit must drop exactly the
     // notes the track being rolled back is about to schedule again — and nothing another track has
     // already queued past that frame and will not.
-    void clearFrom(int64_t fromFrame, int trackId = -1) {
-        std::lock_guard<std::mutex> lock(mutex);
-        std::vector<ScheduledNote> keep;
-        while (!queue.empty()) {
-            ScheduledNote n = queue.top(); queue.pop();
-            if (n.targetFrame < fromFrame || (trackId >= 0 && n.trackId != trackId)) keep.push_back(n);
-        }
-        for (auto& n : keep) queue.push(n);
-    }
+    void clearFrom(int64_t fromFrame, int trackId = -1) { cancels.cancel(fromFrame, trackId); }
 };
 
 // Thread-safe kill queue (for Kill effect K00)
@@ -178,12 +256,17 @@ class KillQueue {
 private:
     std::priority_queue<ScheduledKill, std::vector<ScheduledKill>, std::greater<ScheduledKill>> queue;
     std::mutex mutex;
+    CancelLedger cancels;
 
 public:
+    KillQueue() : queue(std::greater<ScheduledKill>(), reserved<ScheduledKill>()) {}   // see NoteQueue
+
     // Schedule a kill event at exact frame
     void schedule(const ScheduledKill& kill) {
         std::lock_guard<std::mutex> lock(mutex);
-        queue.push(kill);
+        ScheduledKill stamped = kill;
+        stamped.gen = cancels.current(kill.trackId);
+        queue.push(stamped);
         // LOGT, not LOGD — see NoteQueue::schedule.
         LOGT("🔪 Scheduled kill: frame=%lld, track=%d", (long long)kill.targetFrame, kill.trackId);
     }
@@ -192,7 +275,8 @@ public:
     void drainUntil(int64_t maxFrame, std::vector<ScheduledKill>& out) {
         std::lock_guard<std::mutex> lock(mutex);
         while (!queue.empty() && queue.top().targetFrame <= maxFrame) {
-            out.push_back(queue.top());
+            const ScheduledKill& k = queue.top();
+            if (!cancels.cancelled(k.gen, k.trackId, k.targetFrame)) out.push_back(k);
             queue.pop();
         }
     }
@@ -206,69 +290,46 @@ public:
         LOGD("🗑️ Kill queue cleared");
     }
 
-    // Clear only kills scheduled at or after fromFrame; `trackId >= 0` clears one track's. See
+    // Drop the kills queued at or after fromFrame; `trackId >= 0` clears one track's. See
     // NoteQueue::clearFrom for why the filter exists.
-    void clearFrom(int64_t fromFrame, int trackId = -1) {
-        std::lock_guard<std::mutex> lock(mutex);
-        std::vector<ScheduledKill> keep;
-        while (!queue.empty()) {
-            ScheduledKill k = queue.top(); queue.pop();
-            if (k.targetFrame < fromFrame || (trackId >= 0 && k.trackId != trackId)) keep.push_back(k);
-        }
-        for (auto& k : keep) queue.push(k);
-    }
+    void clearFrom(int64_t fromFrame, int trackId = -1) { cancels.cancel(fromFrame, trackId); }
 };
 
-// Action discriminator for ScheduledParamUpdate. Live PBN/PVB/PVX/THO mutations are routed
-// through this queue so the voices[] write happens on the audio thread (no off-thread race) and
-// lands at the exact step frame instead of whenever the look-ahead scheduler reached the step.
+// Action discriminator for ScheduledParamUpdate. Every live change to a sounding voice or the mixer is
+// routed through this queue, so the write happens on the audio thread (no off-thread race) and lands
+// at the exact step frame instead of whenever the look-ahead scheduler reached the step. The numbers
+// live only in the queue — nothing stores them.
 enum ParamUpdateAction {
-    PARAM_UPDATE_MOD_SOURCE = 0,  // write modSourceValues[sourceId] = value (Vxx phraseVol)
-    PARAM_UPDATE_PITCH_BEND,      // active voice: setPitchBendRaw(value)        [PBN]
-    PARAM_UPDATE_VIBRATO,         // active voice: setVibratoRaw(value, value2)  [PVB/PVX]
-    PARAM_UPDATE_TABLE_ROW,       // active sampler voice: tableRow = (int)value [THO]
-    // Live per-note / mixer FX — all applied on the audio thread at the exact step frame.
-    PARAM_UPDATE_PAN,             // active voice: setPan(value)                 [PAN]
-    PARAM_UPDATE_REVERB_SEND,     // active voice: reverbSend = value            [REV]
-    PARAM_UPDATE_DELAY_SEND,      // active voice: delaySend = value             [DEL]
-    PARAM_UPDATE_REVERSE,         // active sampler voice: reverse=(value!=0); value2!=0 → snap pos to new-dir boundary [BCK]
-    // ⚠️ THESE TWO ARE INERT ON A VOICE WHOSE FILTER TYPE IS OFF, and deliberately so: they move the
-    // filter the instrument declares, they do not switch one on.
-    PARAM_UPDATE_FILTER_CUT,      // active voice: filter cutoff    = value*255      [CUT]
-    PARAM_UPDATE_FILTER_RES,      // active voice: filter resonance = value*255      [RES]
-    PARAM_UPDATE_EQ_SLOT,         // active voice: apply eqPresets[(int)value] to chain.eq ((int)value<0 = bypass) [EQN]
-    PARAM_UPDATE_MASTER_EQ,       // global: apply master EQ preset (int)value ((int)value<0 = bypass) [EQM]
-    // ⚠️ THE MIXER FADERS ARE THE ONLY TWO ACTIONS THAT TOUCH NO VOICE, and their apply arms carry a
-    // trap the others do not: processAudioBlock SNAPSHOTS trackVolumes[]/masterVolume once, above the
-    // frame loop, and the hot loops read the snapshot. Writing only the member would apply a whole
-    // block late — audible as a ramp that lags, and invisible to anything that only reads back the
-    // member. Both arms write the member AND the in-scope snapshot.
+    PARAM_UPDATE_MOD_SOURCE = 0,  // modSourceValues[sourceId] = value                   [Vxx]
+    PARAM_UPDATE_PITCH_BEND,      // the track's note: setPitchBendRaw(value)            [PBN]
+    PARAM_UPDATE_VIBRATO,         // the track's note: setVibratoRaw(value, value2)      [PVB/PVX]
+    PARAM_UPDATE_TABLE_ROW,       // the track's voices: every table column to row (int)value [THO]
+    // A per-voice controller: `sourceId` is its CC id (songcore/event.h), `value` the 0-1 CC value.
+    // PAN, REV, DEL, CUT, RES, LPF/HPF/BPF, DRV, CRU, FIN, LPO — one action, one apply function
+    // (applyVoiceCc), shared with the table rows.
+    PARAM_UPDATE_VOICE_CC,
+    PARAM_UPDATE_REVERSE,         // sampler voice: reverse=(value!=0); value2!=0 → snap pos to new-dir boundary [BCK]
+    // A slot reads the preset bank; BANDS carry the values themselves, in `eqBands`, because an
+    // AUS/AUF morph sets the EQ to a setting no preset holds. (int)value < 0 = bypass.
+    PARAM_UPDATE_EQ_SLOT,         // the voice's EQ   [EQN]
+    PARAM_UPDATE_EQ_BANDS,        //                  [EQN + AUS/AUF]
+    PARAM_UPDATE_MASTER_EQ,       // the master EQ    [EQM]
+    PARAM_UPDATE_MASTER_EQ_BANDS, //                  [EQM + AUS/AUF]
+    // ⚠️ THE MIXER FADERS TOUCH NO VOICE, and their apply arms carry a trap the others do not:
+    // processAudioBlock reads trackVolumes[]/masterVolume once, above the frame loop, and the hot
+    // loops read the snapshot. Writing only the member would apply a whole block late — audible as a
+    // ramp that lags, and invisible to anything that only reads back the member. Both arms write the
+    // member AND the in-scope snapshot.
     PARAM_UPDATE_TRACK_VOL,       // mixer: trackVolumes[trackId] = value          [VTR]
     PARAM_UPDATE_MASTER_VOL,      // mixer: masterVolume = value (global)          [VMV]
-    // ⚠️ APPENDED, and these two must stay at the end. An action's NUMBER is its identity — every
-    // value above is a positional entry in a queue record the audio thread branches on.
-    //
-    // The two above carry a SLOT and read the preset bank; these carry the BAND VALUES themselves, in
-    // `eqBands`, because an AUS/AUF morph sets the EQ to a setting no preset holds.
-    PARAM_UPDATE_EQ_BANDS,        // active voice: apply eqBands to chain.eq        [EQN + AUS/AUF]
-    PARAM_UPDATE_MASTER_EQ_BANDS, // global: apply eqBands to the master EQ         [EQM + AUS/AUF]
-    // ⚠️ THE ONE ACTION THAT SWITCHES A FILTER ON, where the two above it deliberately cannot. It
-    // carries the TYPE in `value2` and the cutoff in `value` so both land in one record on one frame:
-    // two records is two blocks, and a filter that opens before it changes shape clicks. Appended,
-    // like everything else here — an action's number is its identity.
-    PARAM_UPDATE_FILTER_MODE,     // active voice: filter type = value2, cutoff = value*255 [LPF/HPF/BPF]
-    // The two dirt boxes. Each writes a value the per-block recompute already reads, so neither
-    // needs a second write to make the change audible — and each dies with its note, because a
-    // trigger reseeds both from the instrument. Appended, as ever.
-    PARAM_UPDATE_DRIVE,           // active voice: overdrive = value*255                   [DRV]
-    PARAM_UPDATE_CRUSH,           // active voice: bits = high nibble, downsample = low    [CRU]
-    // Fine tune, the same per-note lifetime and the same "write what the block already reads" shape.
-    // Both voice types fold it into their pitch every block, so it bends a note already sounding.
-    PARAM_UPDATE_FINE_TUNE,       // active voice: fine tune = value*255, 0x80 = in tune    [FIN]
-    // ⚠️ THE ONE ACTION HERE THAT ACCUMULATES. Every other arm above writes "the parameter is now
-    // this"; this one adds a signed STEP to a running count the voice keeps, so two records slide
-    // the window twice and a dropped record loses a movement rather than a value. Appended, as ever.
-    PARAM_UPDATE_LOOP_SLIDE,      // active sampler voice: loop window += value*255 sixteenths [LPO]
+    // The only action that reaches a SEND BUS. No snapshot write: the delay module owns its head
+    // position and moves it per sample from inside its own `process`.
+    PARAM_UPDATE_DELAY_TIME,      // global: the delay's echo time = value*255, free scale      [TIM]
+    // ⚠️ SCOPED TO AN INSTRUMENT RATHER THAN A TRACK, and carries no value: a voice copies its
+    // instrument's filter, drive, crush and sends when it is triggered, so an edit to any of them is
+    // inaudible until the next note unless the voices already sounding are told to read them again.
+    // It names the instrument in `instrId` and the engine re-reads the rest.
+    PARAM_UPDATE_INSTRUMENT,      // every sounding voice of `instrId` re-reads that instrument
 };
 
 // One EQ setting as AUTHORED HEX — the domain the project file and the FX cells are written in, not
@@ -286,13 +347,15 @@ struct EqBandsHex {
 struct ScheduledParamUpdate {
     int64_t targetFrame;     // Exact audio frame to apply the update
     int trackId;             // Which track's active voice to update
-    int sourceId;            // ModSourceId to write (PARAM_UPDATE_MOD_SOURCE)
+    int sourceId;            // ModSourceId (PARAM_UPDATE_MOD_SOURCE) or CC id (PARAM_UPDATE_VOICE_CC)
     float value;             // New value: mod-source value / bend rate / vibrato speed / table row
     int action = PARAM_UPDATE_MOD_SOURCE;  // discriminator (default keeps Vxx call sites unchanged)
     float value2 = 0.0f;     // second arg: vibrato depth (PARAM_UPDATE_VIBRATO)
     // ⚠️ LAST, and defaulted: every other call site aggregate-initialises this struct positionally and
     // stops before here. A field inserted above instead would silently re-bind all of them.
     EqBandsHex eqBands{};    // PARAM_UPDATE_EQ_BANDS / PARAM_UPDATE_MASTER_EQ_BANDS only
+    int instrId = -1;        // PARAM_UPDATE_INSTRUMENT only — which instrument's voices re-read it
+    uint32_t gen = 0;        // stamped by the queue, never by a caller — see CancelLedger
 
     bool operator>(const ScheduledParamUpdate& other) const {
         return targetFrame > other.targetFrame;
@@ -303,18 +366,24 @@ class ParamUpdateQueue {
 private:
     std::priority_queue<ScheduledParamUpdate, std::vector<ScheduledParamUpdate>, std::greater<ScheduledParamUpdate>> queue;
     std::mutex mutex;
+    CancelLedger cancels;
 
 public:
+    ParamUpdateQueue() : queue(std::greater<ScheduledParamUpdate>(), reserved<ScheduledParamUpdate>()) {}   // see NoteQueue
+
     void schedule(const ScheduledParamUpdate& update) {
         std::lock_guard<std::mutex> lock(mutex);
-        queue.push(update);
+        ScheduledParamUpdate stamped = update;
+        stamped.gen = cancels.current(update.trackId);
+        queue.push(stamped);
     }
 
     // Drain every update with targetFrame <= maxFrame into `out` (ascending order). See NoteQueue.
     void drainUntil(int64_t maxFrame, std::vector<ScheduledParamUpdate>& out) {
         std::lock_guard<std::mutex> lock(mutex);
         while (!queue.empty() && queue.top().targetFrame <= maxFrame) {
-            out.push_back(queue.top());
+            const ScheduledParamUpdate& u = queue.top();
+            if (!cancels.cancelled(u.gen, u.trackId, u.targetFrame)) out.push_back(u);
             queue.pop();
         }
     }
@@ -327,15 +396,7 @@ public:
     // `trackId >= 0` clears one track's — see NoteQueue::clearFrom. ⚠️ The two GLOBAL actions
     // (PARAM_UPDATE_MASTER_EQ / _VOL) carry the trackId of the track that AUTHORED them, and go with
     // it: the track being rolled back is the one that will emit them again.
-    void clearFrom(int64_t fromFrame, int trackId = -1) {
-        std::lock_guard<std::mutex> lock(mutex);
-        std::vector<ScheduledParamUpdate> keep;
-        while (!queue.empty()) {
-            ScheduledParamUpdate u = queue.top(); queue.pop();
-            if (u.targetFrame < fromFrame || (trackId >= 0 && u.trackId != trackId)) keep.push_back(u);
-        }
-        for (auto& u : keep) queue.push(u);
-    }
+    void clearFrom(int64_t fromFrame, int trackId = -1) { cancels.cancel(fromFrame, trackId); }
 };
 
 // Pre-converted EQ band params (Hz/dB/Q) — populated by setInstrumentEqSlot().
@@ -380,21 +441,12 @@ struct InstrumentParams {
     float reverbSend = 0.0f;
     float delaySend  = 0.0f;
 
-    // ⚠️ THE EXACT-FRAME WINDOW: −1 = unset, and then startPoint/endPoint above decide. When set it
-    // REPLACES them, in frames, because 0-255 cannot express a frame.
-    //
-    // startPoint/endPoint are eighths of a percent of the buffer: on a 2-second 44.1 kHz sample one
-    // step is 346 frames, ~8 ms. That is the right grain for a playback parameter you dial by ear, and
-    // the wrong one for the sample editor's audition, which exists to let you hear the exact boundary
-    // CROP is about to cut at — dozens of single-frame nudges land inside one step and the audition
-    // does not change, then the crop applies the frame you actually chose.
-    //
-    // Set only by setInstrumentFrameWindow, and CLEARED by every setInstrumentParams push — so an
-    // ordinary push of the instrument is what ends a preview's window, and no caller has to remember.
-    //
-    // ⚠️ Read at TRIGGER, and then carried on the voice (`Voice::windowStartFrame`), because the mix
-    // loop re-derives the endpoints from startPoint/endPoint every block. Clearing this mid-note ends
-    // the window for the NEXT note, never for one already ringing.
+    // ⚠️ THE EXACT-FRAME WINDOW: −1 = unset, and startPoint/endPoint decide. When set it REPLACES
+    // them, in frames — a 0-255 step is ~8 ms on a 2 s sample, too coarse for the sample editor's
+    // audition of exactly where CROP will cut. Set only by setInstrumentFrameWindow, and CLEARED by
+    // every setInstrumentParams push, so an ordinary push ends a preview's window.
+    // ⚠️ Read at TRIGGER and carried on the voice (`Voice::windowStartFrame`); clearing it mid-note
+    // affects the next note only.
     int startFrame = -1;
     int endFrame   = -1;
 
@@ -405,8 +457,7 @@ struct InstrumentParams {
                          startFrame(-1), endFrame(-1) {}
 };
 
-// Per-slot modulation configuration set from Kotlin.
-// Copied to VoiceModSlot when a note triggers on that instrument.
+// Per-slot modulation configuration, copied to VoiceModSlot when a note triggers on the instrument.
 struct InstrumentModSlot {
     int type;          // 0=NONE, 1=AHD, 2=ADSR, 3=LFO, 4=DRUM, 5=TRIG, 6=SCALAR
     int dest;          // 0=NONE, 1=VOL, 2=PAN, 3=PITCH, 4=FINE_PITCH, 5=CUT, 6=RES, 7=STA, 8=MOD_AMT, 9=MOD_RATE, 10=MOD_BOTH
@@ -445,13 +496,72 @@ struct TableRow {
                  fx3Type(0), fx3Value(0) {}
 };
 
-struct Table {
-    TableRow rows[16];      // 16 rows per table
-    bool loaded;            // Whether this table has been loaded from Kotlin
+static_assert(sizeof(TableRow) == 8, "a table row is one 64-bit word in TableStore");
 
-    Table() : loaded(false) {
-        // Rows initialized by default constructor
+/**
+ * The engine's 256 tables: one writer (the UI's `loadTable`), readers on the audio thread that never
+ * wait.
+ *
+ * Each table has two copies. The writer fills the one readers are NOT pointed at and then points
+ * them at it, so a reader always finds a finished copy; a sequence number per copy catches the one
+ * case that can still tear — two writes landing inside a single 128-byte read — and the reader
+ * simply reads again. The rows are atomic words so the overlap is defined behaviour.
+ */
+class TableStore {
+  public:
+    static constexpr int TABLES = 256;
+    static constexpr int ROWS   = 16;
+
+    /** Writer. The caller serialises writers. */
+    void write(int id, const TableRow (&rows)[ROWS]) {
+        Entry& e = entries_[id];
+        const int next = e.current.load(std::memory_order_relaxed) ^ 1;
+        Copy& c = e.copies[next];
+        const uint32_t s = c.seq.load(std::memory_order_relaxed);
+        c.seq.store(s + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        for (int r = 0; r < ROWS; ++r) {
+            uint64_t w;
+            std::memcpy(&w, &rows[r], sizeof w);
+            c.rows[r].store(w, std::memory_order_relaxed);
+        }
+        c.seq.store(s + 2, std::memory_order_release);
+        e.current.store(next, std::memory_order_release);
+        e.loaded.store(true, std::memory_order_release);
     }
+
+    /** Any thread, never waits. False when the table has never been loaded. */
+    bool read(int id, TableRow (&out)[ROWS]) const {
+        const Entry& e = entries_[id];
+        if (!e.loaded.load(std::memory_order_acquire)) return false;
+        // ⚠️ Bounded: a retry needs the writer to have finished a whole copy during our read, so
+        // eight in a row cannot happen at editing speed. If it ever did, the table is skipped for
+        // this call rather than read torn.
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            const Copy& c = e.copies[e.current.load(std::memory_order_acquire)];
+            const uint32_t s1 = c.seq.load(std::memory_order_acquire);
+            if (s1 & 1u) continue;
+            uint64_t words[ROWS];
+            for (int r = 0; r < ROWS; ++r) words[r] = c.rows[r].load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (c.seq.load(std::memory_order_relaxed) != s1) continue;
+            std::memcpy(out, words, sizeof words);
+            return true;
+        }
+        return false;
+    }
+
+  private:
+    struct Copy {
+        std::atomic<uint32_t> seq{0};
+        std::atomic<uint64_t> rows[ROWS] = {};
+    };
+    struct Entry {
+        Copy copies[2];
+        std::atomic<int>  current{0};
+        std::atomic<bool> loaded{false};
+    };
+    Entry entries_[TABLES];
 };
 
 // Convert unsigned transpose byte to signed semitones

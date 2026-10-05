@@ -191,24 +191,30 @@ endif()
 # ENGINE_CORE_SOURCES is the whole portable engine — no <oboe/*>, <android/*>, or <jni.h>
 # anywhere in it (logging goes through the audio-defs.h shim). A desktop/Linux build reuses
 # this list verbatim and supplies its own shell in place of ANDROID_PLATFORM_SOURCES.
-# TSF_IMPLEMENTATION is defined in soundfont-voice.cpp only; native-audio.cpp is a stub.
+# TSF_IMPLEMENTATION is defined in soundfont-voice.cpp only.
 set(ENGINE_CORE_SOURCES
         songcore/schema-check.cpp
         # The single definition of the file-open hook every layer above resolves against. It is a
         # .cpp and not a header inline for a linkage reason byte_source.h states in full.
-        byte_source.cpp
+        common/byte_source.cpp
         # How much RAM the machine will actually give us. A .cpp for byte_source's linkage reason and
         # to keep <windows.h> out of every TU that asks; see the header.
-        platform_memory.cpp
+        common/platform_memory.cpp
         # Where a slow load reports itself and where a cancel is read. A .cpp for platform_memory's
         # linkage reason — one symbol, not one copy per shared library. See the header.
-        load_progress.cpp
+        common/load_progress.cpp
         soundfont-voice.cpp
         # Reading a SoundFont's preset index without its samples, and writing a one-preset copy of
         # it. Pure file-format handling over a FILE* — no tsf, no engine. See the header.
         soundfont-trim.cpp
         sample-editor.cpp
+        # One class, AudioEngine, over five files: the core, the sample pool, the SoundFont bank, the
+        # table walk, and the block itself (engine-mix.cpp — processAudioBlock).
         audio-engine.cpp
+        engine-samples.cpp
+        engine-soundfont.cpp
+        engine-tables.cpp
+        engine-mix.cpp
         transient-detector.cpp
         # Native compressed-audio decoders. dr_mp3/dr_flac impl live inside audio-decoders.cpp;
         # stb_vorbis and minimp4 each ship as a .c that must be its own translation unit (compiled as
@@ -227,6 +233,24 @@ set(ENGINE_CORE_SOURCES
         effects/primitives/daisysp/crossfade.cpp
         effects/primitives/daisysp/balance.cpp
         effects/primitives/daisysp/reverbsc.cpp
+        # The Dragonfly Reverb algorithms (reverb ALGO 1..4) and the freeverb3 subset they run on.
+        effects/primitives/dragonfly/dragonfly-reverb.cpp
+        effects/primitives/dragonfly/freeverb/allpass.cpp
+        effects/primitives/dragonfly/freeverb/biquad.cpp
+        effects/primitives/dragonfly/freeverb/comb.cpp
+        effects/primitives/dragonfly/freeverb/delay.cpp
+        effects/primitives/dragonfly/freeverb/delayline.cpp
+        effects/primitives/dragonfly/freeverb/earlyref.cpp
+        effects/primitives/dragonfly/freeverb/efilter.cpp
+        effects/primitives/dragonfly/freeverb/nrev.cpp
+        effects/primitives/dragonfly/freeverb/nrevb.cpp
+        effects/primitives/dragonfly/freeverb/progenitor.cpp
+        effects/primitives/dragonfly/freeverb/progenitor2.cpp
+        effects/primitives/dragonfly/freeverb/revbase.cpp
+        effects/primitives/dragonfly/freeverb/slot.cpp
+        effects/primitives/dragonfly/freeverb/utils.cpp
+        effects/primitives/dragonfly/freeverb/zrev.cpp
+        effects/primitives/dragonfly/freeverb/zrev2.cpp
         effects/modules/dust-chain.cpp
         effects/soundpipe/pareq.c
 )
@@ -251,6 +275,25 @@ endif()
 # lib that tools/ptrender links — see the desktop branch above). cl.exe does not error on an unknown
 # `-f…`, it warns D9002 and IGNORES it, so an unguarded list would look fine and quietly do nothing.
 # Hence the explicit MSVC arm on each one.
+#
+# Warnings are on for OUR files on every compiler. The vendored sources compiled into this target
+# are silenced per file (their warnings are not ours to fix), and the vendored headers our TUs
+# include (tsf.h, stb_image.h, dr_mp3/dr_flac) are wrapped in a push/pop at the include.
+# PT_WERROR turns them into errors; CI sets it. ⚠️ Off by default on purpose: F-Droid builds the APK
+# itself, and a newer compiler's new warning must not fail a user's or a packager's build.
+option(PT_WERROR "Treat warnings in PocketTracker's own sources as errors" OFF)
+set(PT_VENDORED_ENGINE_SOURCES
+        effects/soundpipe/pareq.c
+        kissfft/kiss_fft.c
+        kissfft/kiss_fftr.c
+        effects/primitives/daisysp/svf.cpp
+        effects/primitives/daisysp/overdrive.cpp
+        effects/primitives/daisysp/decimator.cpp
+        effects/primitives/daisysp/limiter.cpp
+        effects/primitives/daisysp/compressor.cpp
+        effects/primitives/daisysp/crossfade.cpp
+        effects/primitives/daisysp/balance.cpp
+        effects/primitives/daisysp/reverbsc.cpp)
 if(MSVC)
     # M_PI is not in MSVC's <cmath> without this — the engine uses it in the LFOs, the SOLA window
     # and the FFT. (GCC/Clang expose it by default.) PUBLIC because sampler-voice.h uses M_PI in a
@@ -259,6 +302,17 @@ if(MSVC)
     # MSVC's default is already /fp:precise (no contraction, no reassociation) — state it anyway, so
     # a future /fp:fast in a parent scope cannot silently change the DSP's rounding.
     target_compile_options(pockettracker PRIVATE /fp:precise)
+
+    # /W4 is gcc's -Wall -Wextra -Wshadow plus the int→float conversions. The two CRT defines drop
+    # MSVC's "use fopen_s / _fileno instead" notices, which are advice about Microsoft's API, not bugs.
+    target_compile_options(pockettracker PRIVATE /W4 $<$<BOOL:${PT_WERROR}>:/WX>)
+    target_compile_definitions(pockettracker PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+    set_source_files_properties(
+            ${PT_VENDORED_ENGINE_SOURCES}
+            vendor/stb_vorbis/stb_vorbis.c
+            vendor/minimp4/minimp4_impl.c
+            PROPERTIES COMPILE_OPTIONS "/W0"
+    )
 else()
     # -ffast-math here is a pure codegen optimisation (reassociation, no NaN/Inf special-casing)
     # for the DSP-heavy TUs. It is NOT the denormal protection: that is
@@ -279,11 +333,12 @@ else()
     # -ffinite-math-only, which can corrupt Vorbis decode/setup — so build the decoder TUs WITHOUT it
     # (dr_mp3/dr_flac don't need it either; the perf delta on a one-shot file decode is negligible). The
     # per-source flag is appended after the target's -ffast-math, so -fno-fast-math wins for these files.
+    set_source_files_properties(audio-decoders.cpp PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
+    # The two vendored decoders: the same flag, plus their warnings silenced (see -Wall below).
     set_source_files_properties(
-            audio-decoders.cpp
             vendor/stb_vorbis/stb_vorbis.c
             vendor/minimp4/minimp4_impl.c
-            PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+            PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-w"
     )
 
     # songcore's scheduling math is REQUIRED to be IEEE-exact (event-schema §5/§6: its float params are
@@ -302,7 +357,22 @@ else()
     # native breakpoints, so the loss of -O0 debuggability is a non-issue here.) MSVC keeps CMake's
     # own /Od-Debug, /O2-Release defaults: no real-time constraint applies to a host tool.
     target_compile_options(pockettracker PRIVATE $<IF:$<CONFIG:Debug>,-O2,-O3>)
+
+    target_compile_options(pockettracker PRIVATE -Wall -Wextra -Wshadow $<$<BOOL:${PT_WERROR}>:-Werror>)
+    set_source_files_properties(${PT_VENDORED_ENGINE_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
+
+# freeverb3 is compiled for float samples, and names its own headers from the dragonfly/ root
+# (`#include "freeverb/utils.hpp"`, `#include "fv3_config.h"`). Both are scoped to those files, so
+# neither the define nor the extra root reaches the rest of the engine or anything that links it.
+file(GLOB PT_DRAGONFLY_SOURCES CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/effects/primitives/dragonfly/*.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/effects/primitives/dragonfly/freeverb/*.cpp)
+set_source_files_properties(${PT_DRAGONFLY_SOURCES} PROPERTIES
+        COMPILE_DEFINITIONS LIBFV3_FLOAT
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/effects/primitives/dragonfly)
+set_source_files_properties(${PT_DRAGONFLY_SOURCES} PROPERTIES COMPILE_OPTIONS
+        $<IF:$<BOOL:${MSVC}>,/W0,-w>)   # vendored
 
 # Include paths: root (for audio-defs.h, sampler-voice.h, etc.),
 #   effects/soundpipe (so pareq.c finds soundpipe.h), kissfft (for kiss_fft.h).
@@ -369,6 +439,14 @@ add_library(pt-ui STATIC
         ui/canvas.cpp
         ui/clipboard.cpp
         ui/input_dispatcher.cpp
+        ui/dispatch/browser.cpp
+        ui/dispatch/buttons.cpp
+        ui/dispatch/chords.cpp
+        ui/dispatch/midi.cpp
+        ui/dispatch/project.cpp
+        ui/dispatch/sample_editor.cpp
+        ui/dispatch/sub_screens.cpp
+        ui/dispatch/theme_scale_groove.cpp
         ui/layout.cpp
         ui/lifecycle.cpp
         ui/std_filesystem.cpp
@@ -382,11 +460,14 @@ add_library(pt-ui STATIC
         ui/modules/eq_editor.cpp
         ui/modules/file_browser.cpp
         ui/modules/fx_helper_overlay.cpp
+        ui/modules/map_picker_overlay.cpp
         ui/modules/groove_editor.cpp
+        ui/modules/help_overlay.cpp
         ui/modules/help_panel.cpp
         ui/modules/instrument_editor.cpp
         ui/modules/instrument_pool.cpp
         ui/modules/loading_strip.cpp
+        ui/modules/midi_map_editor.cpp
         ui/modules/midi_settings.cpp
         ui/modules/mixer.cpp
         ui/modules/modulation.cpp
@@ -395,6 +476,7 @@ add_library(pt-ui STATIC
         ui/modules/phrase_editor.cpp
         ui/modules/project_editor.cpp
         ui/modules/qwerty_keyboard.cpp
+        ui/modules/render_dialog.cpp
         ui/modules/scale_editor.cpp
         ui/modules/sample_editor.cpp
         ui/modules/settings_editor.cpp
@@ -447,8 +529,11 @@ endif()
 # rounding than the tools that certify them.
 if(MSVC)
     target_compile_options(pt-ui PRIVATE /fp:precise)
+    target_compile_options(pt-ui PRIVATE /W4 $<$<BOOL:${PT_WERROR}>:/WX>)   # see the engine's note
+    target_compile_definitions(pt-ui PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
 else()
     target_compile_options(pt-ui PRIVATE -fno-fast-math -ffp-contract=off)
+    target_compile_options(pt-ui PRIVATE -Wall -Wextra -Wshadow $<$<BOOL:${PT_WERROR}>:-Werror>)
 endif()
 
 # ─── The Android SDL app: pt-ui's first real linker (convergence C3) ───────────────────────────

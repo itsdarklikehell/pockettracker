@@ -2,9 +2,8 @@
 
 #define LOG_TAG "NativeAudio"
 
-// Platform logging shim. On Android the engine logs through <android/log.h>; on any other platform
-// (e.g. the planned Linux port) it falls back to stderr. Routing the macros through this header keeps
-// every engine translation unit free of a hard dependency on the Android log API.
+// Platform logging shim: <android/log.h> on Android, stderr elsewhere, so no engine translation unit
+// depends on the Android log API.
 #ifdef __ANDROID__
 #  include <android/log.h>
 #  define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -13,29 +12,14 @@
 #  include <cstdio>
 #  include <cstdlib>
 
-// ⚠️ OFF ANDROID THERE IS NO LOGCAT TO FILTER THESE. On Android LOGD is a debug-priority line that a
-// user never sees; here the same 35 call sites go straight to stderr — which, in a shipped desktop
-// build, is the console window sitting behind the tracker. A2's first-run experience was a wall of
+// ⚠️ OFF ANDROID THERE IS NO LOGCAT TO FILTER THESE: LOGD would go straight to the console behind
+// the tracker. So LOGD is OPT-IN off Android: POCKETTRACKER_LOG=1 (anything but unset/empty/"0",
+// as POCKETTRACKER_HOME is read).
 //
-//     [D/NativeAudio] 🔊 Track 0 volume set to 1.00
+// ⚠️ LOGE IS NOT GATED: an error is not spam, and a user can paste the console back when it breaks.
 //
-// on every boot, with the emoji arriving as mojibake on any console that is not UTF-8 (which is
-// main.cpp's own stated ASCII rule, broken by a header that predates it). The PortMaster build has
-// always done this too; nobody noticed because a handheld's stderr goes nowhere anyone looks.
-//
-// So LOGD is OPT-IN off Android:  POCKETTRACKER_LOG=1 ./pockettracker-sdl
-// Anything but unset/empty/"0" turns it on, matching how POCKETTRACKER_HOME is read.
-//
-// ⚠️ LOGE IS NOT GATED, deliberately. An error is not spam, and a shipped build that swallows its
-// errors is worse than one that is chatty — the whole reason the console is worth keeping is that a
-// user can paste it back when something breaks.
-//
-// ⚠️ A PLAIN BOOL READ ONCE, not getenv() per call. getenv allocates nothing but walks the
-// environment and is not real-time safe, and while processAudioBlock currently contains no log call
-// at all (checked), the control-path functions that do are reachable from queue drains. A C++17
-// inline variable is initialised before main, so every LOGD after start-up costs one predictable
-// branch on an already-hot bool — cheaper than today's unconditional fprintf, and safe if a log
-// line ever does land on the audio thread.
+// ⚠️ A plain bool read once (an inline variable, initialised before main), not getenv() per call:
+// getenv is not real-time safe, and control-path logging is reachable from queue drains.
 namespace ptlog {
 inline const bool debug_enabled = [] {
     const char* v = std::getenv("POCKETTRACKER_LOG");
@@ -64,12 +48,9 @@ inline const bool debug_enabled = [] {
 #  define LOGT(...)
 #endif
 
-// One voice per track (8 tracks); stereo samples use one slot with sampleDataRight.
-// NOTE: there are 9 *logical* lanes (tracks 0-7 + the preview lane, PREVIEW_TRACK_ID = 8) but only 8
-// voices. This is intentional: a preview is a transient audition, so when all 8 song tracks are
-// sounding a preview note deliberately steals/preempts a fading voice (see the Step-2/3 voice search
-// in scheduleNoteBatch) rather than the pool being widened to 9. Bump this to 9 only if simultaneous
-// preview-over-full-song becomes a real requirement.
+// One voice per track (8 tracks); stereo samples use one slot with sampleDataRight. There are 9
+// LOGICAL lanes (tracks 0-7 + the preview lane, PREVIEW_TRACK_ID = 8) but 8 voices: a preview
+// steals a fading voice when all 8 tracks sound (scheduleNoteBatch's voice search).
 const int MAX_VOICES = 8;
 const int DECLICK_SAMPLES = 64;  // ~1.45ms anti-click fade at 44100Hz (note start, voice steal)
 // Deliberate kills (K00 / table KIL / preview stop) fade longer: 1.45 ms from a high-amplitude
@@ -81,12 +62,19 @@ const int KILL_FADE_SAMPLES = 256;
 // high-amplitude point is a click whatever cut it. ⚠️ It is a GATE, not a fade — it runs in both
 // directions, so unmuting rides back up to the fader over the same 5.8 ms rather than snapping.
 const int MUTE_GATE_SAMPLES = 256;
+// A mixer fader (a hand, VTR, VMV) glides at most one full swing per this many samples, across as many
+// blocks as it takes. A VTR on a note's own step does not glide at all (engine-mix.cpp).
+const int FADER_GLIDE_SAMPLES = 256;
 
 // ===================================
 // EFFECT TYPE CONSTANTS — ⚠️ must match native/songcore/effects.h, which is where an effect's code is
 // defined and where the UI, the file format and the scheduler all read it from. Only effects the C++
 // TABLE engine processes are listed here; the phrase-level ones (ARP/ARC/REP/…) are songcore's.
 // ===================================
+const int FX_CHA    = 0x04;  // CHA xy - chance: x for its nearest filled neighbour on the LEFT, y on the RIGHT
+const int FX_RNL    = 0x11;  // RNL xx - add a random 0..xx to the value in the slot to its LEFT
+const int FX_RND    = 0x10;  // RND xx - re-fire the last command in this column with 0..xx added
+const int FX_PAN    = 0x1F;  // PAN xx - the voice's pan: 00 left, 80 centre, FF right
 const int FX_HOP    = 0x08;  // Hxx - Table hop (repeat-count jump, FF = stop table)
 const int FX_TIC    = 0x09;  // Txx - Table tick rate (01-FB = tics/row, FC-FF = special modes)
 const int FX_KILL   = 0x0B;  // K00 - Kill voice
@@ -104,6 +92,14 @@ const int FX_BPF    = 0x35;  // BPF xx - band-pass on, cutoff xx
 const int FX_DRV    = 0x37;  // DRV xx - overdrive amount
 const int FX_CRU    = 0x38;  // CRU xy - x = bits crushed, y = downsample; two 4-bit values in one cell
 const int FX_FIN    = 0x39;  // FIN xx - fine tune; 80 = in tune, one semitone either way
+const int FX_INS    = 0x3C;  // INS xx - play this hit on instrument xx; on a table row it is a SWITCH
+const int FX_TIM    = 0x3D;  // TIM xx - the delay's echo time, free scale (00-FF = 0-2 s); GLOBAL
+
+// The highest value a random roll may push a table command to — songcore's effect_value_max for the
+// codes a table row acts on, and pinned to it in engine_consumer.h.
+inline constexpr int tableFxCeiling(int fxType) {
+    return (fxType == FX_EQN || fxType == FX_EQM || fxType == FX_INS) ? 127 : 255;
+}
 // ─── The loop modes, as the engine numbers them ─────────────────────────────────────────────────
 //
 // ⚠️ **OSCILLATOR IS A FORWARD LOOP WITH ITS SCAN RATE RETUNED**, not a fourth kind of traversal:

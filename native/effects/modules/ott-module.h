@@ -14,10 +14,8 @@
 // and only lifts what is genuinely below it after compression.
 //
 // ⚠️ Keying both halves off the band input instead makes the upward half swing
-// its full range between notes and dump the accumulated boost, times the
-// makeup below, onto the front of the next note: measured +5 dB of peak on a
-// render whose RMS went DOWN, because the limiter then spends a second
-// recovering from each spike.
+// its full range between notes and dump its boost, times the makeup, onto the
+// next note's front — spikes the limiter then spends a second recovering from.
 //
 // makeup runs after both halves, before the band is summed back.
 //
@@ -67,11 +65,12 @@ struct BandCompressor {
         applySettings();
     }
 
+    // daisysp::fmax, not fmaxf: on gcc without -ffast-math fmaxf is a libm call, six per frame here.
     inline void process(float& L, float& R) {
-        downward.Process(fmaxf(fabsf(L), fabsf(R)));
+        downward.Process(daisysp::fmax(fabsf(L), fabsf(R)));
         L = downward.Apply(L);
         R = downward.Apply(R);
-        upward.Process(fmaxf(fabsf(L), fabsf(R)));
+        upward.Process(daisysp::fmax(fabsf(L), fabsf(R)));
         L = upward.Apply(L) * makeupLin;
         R = upward.Apply(R) * makeupLin;
     }
@@ -96,11 +95,9 @@ struct BandCompressor {
 //   mid    -30 dB   66.7:1     4:1      +5.7 dB    1.4 ms / 28 ms
 //   high   -30 dB   limiter    4:1     +10.3 dB    0.7 ms / 15 ms
 //
-// ⚠️ The preset also drives +5.2 dB into every band ahead of its detectors,
-// which is NOT carried here. That drive exists to push a quiet mix over the
-// threshold, and this master bus already sits ~27 dB above it, so all it would
-// add is 5 dB of naked gain through the attack window on top of the makeup —
-// measured as 5 dB of extra peak into the limiter for 0.1 dB of steady state.
+// ⚠️ The preset's +5.2 dB drive into every band is NOT carried: this bus
+// already sits far above the threshold, so it would only add naked gain
+// through the attack window, straight into the limiter.
 //
 // ⚠️ The outer bands are
 // made up ~4.6 dB harder than the middle one, and that asymmetry is what gives
@@ -123,10 +120,15 @@ struct BandCompressor {
 // Triggered on: disabled→enabled, resetForRender, and auto-reset.
 //
 // Auto-reset: after SILENCE_RESET_FRAMES of silence the module resets DSP and
-// starts a warmup. This ensures every playback-start-after-silence gets the
-// warmup rather than the LR4 filter-transient + per-band compression artifact
-// that sounds like a fade-in. Depth changes while enabled do NOT reset (avoids
-// compressors losing their gain state during key-repeat parameter sweeps).
+// starts a warmup, rather than the LR4 filter-transient + per-band compression
+// artifact that sounds like a fade-in. Depth changes while enabled do NOT reset
+// (avoids compressors losing their gain state during key-repeat parameter sweeps).
+//
+// ⚠️ SILENCE ALONE DOES NOT COVER A RESTART. A START soon after a STOP, or one
+// with a reverb tail still ringing, never sees 500 ms of silence — and in that
+// gap the upward halves have been lifting the fading tail by up to +22 dB, which
+// the first note of the new take then meets. The engine calls restart() for
+// every take that follows a stop.
 // ===========================================================================
 struct OttModule {
     LRCrossover    xover;
@@ -173,29 +175,27 @@ struct OttModule {
         // Reset DSP state only on the disabled→enabled transition.
         // Resetting on every depth change (e.g. key-repeat while sweeping depth) would
         // prevent the compressors from ever building up gain, making OTT inaudible.
-        if (!wasEnabled && enabled) {
-            xover.init(sampleRate, XOVER_LOW, XOVER_HIGH);
-            bandLow.reset();
-            bandMid.reset();
-            bandHigh.reset();
-            warmupRemaining = WARMUP_SAMPLES;
-        }
+        if (!wasEnabled && enabled) restart();
     }
 
-    // Called by RenderController before offline render. Resets all DSP state and
-    // enables warmup — the LR4 filters start from zero state so their output is
-    // near-zero for the first ~500 samples; warmup hides this as a dry→wet fade
-    // over 11.6ms rather than a pop at the start of the export.
+    // The DSP from zero, behind the dry→wet warmup fade.
+    void restart() {
+        xover.init(sampleRate, XOVER_LOW, XOVER_HIGH);
+        bandLow.reset();
+        bandMid.reset();
+        bandHigh.reset();
+        warmupRemaining = WARMUP_SAMPLES;
+    }
+
+    // Called before an offline render. Resets all DSP state and enables warmup — the LR4 filters
+    // start from zero, so their output is near-zero for ~500 samples; warmup hides that as an
+    // 11.6 ms dry→wet fade rather than a pop at the start of the export.
     void resetForRender(float d) {
         depth   = d;
         enabled = (d > 0.f);
         if (enabled) {
-            xover.init(sampleRate, XOVER_LOW, XOVER_HIGH);
-            bandLow.reset();
-            bandMid.reset();
-            bandHigh.reset();
-            warmupRemaining = WARMUP_SAMPLES;
-            silenceCounter  = 0;
+            restart();
+            silenceCounter = 0;
         }
     }
 
@@ -212,12 +212,16 @@ struct OttModule {
         if (!hasSignal) {
             if (silenceCounter < SILENCE_RESET_FRAMES) silenceCounter += numFrames;
         } else {
-            if (silenceCounter >= SILENCE_RESET_FRAMES) {
-                xover.init(sampleRate, XOVER_LOW, XOVER_HIGH);
-                bandLow.reset(); bandMid.reset(); bandHigh.reset();
-                warmupRemaining = WARMUP_SAMPLES;
-            }
+            if (silenceCounter >= SILENCE_RESET_FRAMES) restart();
             silenceCounter = 0;
+        }
+
+        // Idle: past the reset span, a block of exact zeros is passed through untouched. The next
+        // signal resets the DSP anyway, so running it on nothing would only spend the CPU.
+        if (silenceCounter >= SILENCE_RESET_FRAMES) {
+            bool zero = true;
+            for (int i = 0; i < numFrames * channelCount && zero; i++) zero = buf[i] == 0.0f;
+            if (zero) return;
         }
 
         for (int i = 0; i < numFrames; i++) {

@@ -1,7 +1,7 @@
 #ifndef POCKETTRACKER_SHELL_MIDI_IN_ALSA_H
 #define POCKETTRACKER_SHELL_MIDI_IN_ALSA_H
 
-// The LINUX songcore::IMidiIn — ALSA rawmidi, reached through dlopen. MIDI plan phase E5.
+// The LINUX songcore::IMidiIn — ALSA rawmidi, reached through dlopen.
 // See midi-in-alsa.cpp for the reader thread, and alsa-rawmidi.h for the loader and the device walk
 // it shares with the OUTPUT backend. Compiles to nothing off desktop/handheld Linux, so midi-in.h can
 // name the header unconditionally.
@@ -28,6 +28,7 @@ class AlsaMidiIn : public MidiInBase {
     bool        open(int index) override;
     void        close() override;
     bool        is_open() const override { return in_ != nullptr; }
+    bool        broken() const override { return dead_.load(std::memory_order_relaxed); }
 
     /** False when libasound.so.2 is absent or a symbol is missing — the INPUT row then draws NO PORTS. */
     bool available() const { return lib_ != nullptr; }

@@ -1,7 +1,7 @@
 #ifndef POCKETTRACKER_SHELL_MIDI_IN_ANDROID_H
 #define POCKETTRACKER_SHELL_MIDI_IN_ANDROID_H
 
-// The ANDROID songcore::IMidiIn — `MidiManager`, reached by JNI. MIDI plan phase E5.
+// The ANDROID songcore::IMidiIn — `MidiManager`, reached by JNI.
 // See midi-in-android.cpp for the direction gotcha, and for why this backend is POLLED where the other
 // two push. Compiles to nothing off Android; android-main.cpp is the only thing that names it, exactly
 // as it is the only thing that names AndroidMidiOut.
@@ -28,6 +28,7 @@ class AndroidMidiIn : public MidiInBase {
 
     /** The frame loop's call: ask the Kotlin side for whatever arrived since last frame. */
     void pump() override;
+    bool polled() const override { return true; }
 
   private:
     struct Hooks {

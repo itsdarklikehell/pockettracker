@@ -146,11 +146,14 @@ add_executable(pockettracker-sdl
         midi-out-winmm.cpp # the WINDOWS songcore::IMidiOut (MIDI plan B2);  empty TU elsewhere
         midi-out-alsa.cpp  # the LINUX   songcore::IMidiOut (MIDI plan B2b); empty TU elsewhere
         alsa-rawmidi.cpp   # the ONE libasound loader + rawmidi device walk (E5); empty TU elsewhere
+        alsa-route.cpp     # what stands between ALSA's default and the chip; empty TU elsewhere
         midi-in-base.cpp   # the platform-FREE half of a MIDI INPUT backend (E2): list, sink, counters
         midi-in-winmm.cpp  # the WINDOWS songcore::IMidiIn  (MIDI plan E2);  empty TU elsewhere
         midi-in-alsa.cpp   # the LINUX   songcore::IMidiIn  (MIDI plan E5);  empty TU elsewhere
         midi-sender.cpp    # the just-in-time MIDI sender thread + its jitter instrument (MIDI plan B3)
         sdl-audio-engine.cpp
+        asio-audio-engine.cpp   # the ASIO output (SETTINGS > AUDIO OUT); empty TU elsewhere
+        audio-outputs-win.cpp   # the switch between the system output and ASIO; empty TU elsewhere
         sdl-input.cpp
         sdl-touch.cpp
         sdl-video.cpp
@@ -161,10 +164,37 @@ add_executable(pockettracker-sdl
 # version is only in the download's filename — which a reporter has usually thrown away.
 target_compile_definitions(pockettracker-sdl PRIVATE "PT_VERSION_STRING=\"${PT_VERSION}\"")
 
+# A handheld build may take the sound chip for itself (sdl-audio-engine.cpp): nothing else plays
+# there. A desktop build never does — an exclusive open would silence every other program.
+option(PT_HANDHELD "Build for a handheld (PortMaster): the audio may open the chip exclusively" OFF)
+if(PT_HANDHELD)
+    target_compile_definitions(pockettracker-sdl PRIVATE PT_HANDHELD=1)
+endif()
+
 # winmm — `midiOutShortMsg` and friends (midi-out-winmm.cpp). In every Windows install; no package,
-# no COM, no manifest capability.
+# no manifest capability.
+#
+# ole32 — the audio endpoint query in sdl-audio-engine.cpp, which is the one place this shell does use
+# COM. Same terms as winmm: a system library, present everywhere, nothing to ship beside it.
 if(WIN32)
-    target_link_libraries(pockettracker-sdl PRIVATE winmm)
+    target_link_libraries(pockettracker-sdl PRIVATE winmm ole32)
+
+    # The Steinberg ASIO SDK's host side (native/vendor/asio, GPLv3 option). Vendor code: its own
+    # target, so our warning flags never reach it.
+    set(PT_ASIO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../native/vendor/asio")
+    add_library(pt-asio STATIC
+            "${PT_ASIO_DIR}/common/asio.cpp"
+            "${PT_ASIO_DIR}/host/asiodrivers.cpp"
+            "${PT_ASIO_DIR}/host/pc/asiolist.cpp")
+    target_include_directories(pt-asio PUBLIC
+            "${PT_ASIO_DIR}/common" "${PT_ASIO_DIR}/host" "${PT_ASIO_DIR}/host/pc")
+    target_link_libraries(pt-asio PUBLIC ole32 advapi32)
+    if(MSVC)
+        target_compile_options(pt-asio PRIVATE /W0)
+    else()
+        target_compile_options(pt-asio PRIVATE -w)
+    endif()
+    target_link_libraries(pockettracker-sdl PRIVATE pt-asio)
 
     # ⚠️ NO CONSOLE WINDOW. A console-subsystem exe opens a black window beside the app for the whole
     # session, and on Windows that window IS the only place the program's output ever went. The

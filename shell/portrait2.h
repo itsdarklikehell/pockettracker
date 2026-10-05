@@ -1,16 +1,12 @@
-// ─── shell/portrait2.{h,cpp} — the PORTRAIT2 device-skin RENDERER (convergence D) ─────────────────
+// ─── shell/portrait2.{h,cpp} — the PORTRAIT2 device-skin RENDERER ────────────────────────────────
 //
-// The shell half of the retro-device skin: on a phone held in portrait, the 640×480 tracker sits in a
-// bezel with a ventilation panel above it, a branding strip below, and a themed button cluster filling
-// the bottom — 20:9 chrome drawn AROUND the letterboxed frame, exactly as `PortraitLayout2WithVirtual‐
-// Buttons` (ScreenLayouts.kt) + `VirtualControlsPortrait2` (VirtualControls.kt) do on Android today.
+// On a phone held in portrait, the 640×480 tracker sits in a bezel with a vent panel above, a
+// branding strip below, and a themed button cluster filling the bottom — 20:9 chrome drawn AROUND
+// the frame.
 //
-// It is the consumer the host-tested geometry was written for. `touch_layout::portrait2_skin` computes
-// the four band rects + the frame-in-bezel (checked by `pttouch --positions`); this file COMPOSITES
-// them: it clears to the casing colour, blits each band's PNG (from `Skin`, decoded once), tells
-// `SdlVideo` where the frame goes, and draws the ten buttons on the backing. The split is convergence
-// D1's: the ARITHMETIC is shared, portable, golden/oracle-checked C++; the PIXELS are shell-side, and
-// this is the shell.
+// `touch_layout::portrait2_skin` computes the band rects and the frame-in-bezel (shared, portable
+// C++); this file COMPOSITES them: casing clear, each band's PNG (from `Skin`), the frame placement
+// for `SdlVideo`, and the ten buttons on the backing.
 //
 //   ┌───────────────┐  band 1  top vent panel   (SkinPiece::TopPanel)      — may be absent (case C)
 //   │  ┌─────────┐  │  band 2  screen bezel      (SkinPiece::ScreenBezel)   — the 640×480 frame sits INSIDE
@@ -19,17 +15,35 @@
 //   │  [buttons...]  │  band 4  button cluster    (SkinPiece::ButtonBacking) — the ten portrait2_rects
 //   └───────────────┘
 //
-// The buttons are hit-testable. `PortraitSkin` exposes the cluster rect + the ten box-local button rects
-// (`cluster_rect()` / `button_rects()`) — the SAME geometry it draws — and `SdlTouch::layout_portrait2`
-// hit-tests them, feeding fingers through `SdlInput`'s own press/release exactly as the landscape panels
-// do. Drawing stays HERE; only the finger→Button mapping is SdlTouch's, so there is one source of truth
-// for where a button is and a press can never highlight a cell the finger is not on.
+// ── TWO KINDS OF SKIN IN ONE RENDERER ─────────────────────────────────────────────────────────────
+//
+// The above is the CHROME art (amiga / amiga-2). The TRANSPARENT skin is drawn by this same class from
+// a different starting point: `portrait2_skin_bare` instead of `portrait2_skin`, so there are no bands
+// at all — just the tracker across the FULL device width and the button cluster below it. Its art is
+// the bare square and wide shapes, tinted at blit time to the live tracker theme, so two colours reach
+// the screen: the theme's background, which is the casing clear, and its TXT VALUE, which is every key
+// and the same labels the chrome skins draw.
+//
+//   ┌───────────────┐  the tracker — full device width, no bezel, no border
+//   │    640×480    │
+//   ├───────────────┤
+//   │  [buttons...]  │  the same cluster, the same `portrait2_rects`, the same hit-test
+//   └───────────────┘
+//
+// The CLUSTER arithmetic is shared, which is the point: only the bands around it differ, so a button
+// is in the same place relative to its neighbours under either skin and `SdlTouch` needs to know
+// nothing about which one is up.
+//
+// `cluster_rect()` / `button_rects()` expose the SAME geometry the buttons are drawn with, and
+// `SdlTouch::layout_portrait2` hit-tests them — one source of truth, so a press can never highlight a
+// cell the finger is not on.
 
 #ifndef POCKETTRACKER_PORTRAIT2_H
 #define POCKETTRACKER_PORTRAIT2_H
 
 #include <SDL.h>
 
+#include "skin.h"   // SkinArt — stored by value below, so the definition is needed here
 #include "ui/touch_layout.h"
 
 #include <cstdint>
@@ -38,7 +52,6 @@ class SdlInput;
 
 namespace ptshell {
 
-class Skin;
 class Font;
 
 class PortraitSkin {
@@ -49,10 +62,10 @@ public:
      * next frame. `enabled` is the same touchscreen gate the skin load and `SdlTouch` use — a phone yes,
      * a desktop no (unless POCKETTRACKER_TOUCH forces it for a bring-up).
      *
-     * `fit` is SETTINGS > SCALING (`scalingBilinear`): INTEGER (false) integer-scales the 640×480 frame
-     * and centres it in the bezel; FIT (true) fills the bezel's inner area with the largest 4:3 fit
-     * (a fractional scale, filtered), exactly as Kotlin's PortraitLayout2 does under BILINEAR. It only
-     * changes where `frame_rect()` lands — the texture's own filtering follows `SdlVideo::set_scaling`.
+     * `fit` is SETTINGS > SCALING (`scalingBilinear`): INTEGER (false) integer-scales the 640×480
+     * frame and centres it in the bezel; FIT (true) fills the bezel's inner area with the largest 4:3
+     * fit (a fractional scale, filtered). It only moves `frame_rect()` — filtering follows
+     * `SdlVideo::set_scaling`.
      */
     void layout(int outW, int outH, bool enabled, bool fit);
 
@@ -68,11 +81,10 @@ public:
      *  THERE (not window-centred). Handed to `SdlVideo::present_skinned` as the frame dest. */
     SDL_Rect frame_rect() const { return frame_; }
 
-    /** The bezel's inner SCREEN area (the "glass") — the padded region `draw_chrome` fills with the
-     *  tracker background and inside which `frame_rect()` sits. Handed to `present_skinned` as the modal
-     *  SCRIM bounds (B4): with INTEGER scaling the frame is a whole multiple smaller than this glass, and
-     *  a modal must dim the bright gap AROUND the frame too — but only the glass, never the casing or the
-     *  button cluster. Empty theme (no inner bezel) → the frame rect, so the scrim then dims nothing. */
+    /** The bezel's inner SCREEN area (the "glass"), which `draw_chrome` fills with the tracker
+     *  background and inside which `frame_rect()` sits — the modal SCRIM bounds for `present_skinned`:
+     *  with INTEGER scaling the frame is smaller than the glass, and a modal must dim the gap around
+     *  it too, never the casing or the cluster. No inner bezel → the frame rect. */
     SDL_Rect screen_rect() const {
         return geom_.innerBezel.empty()
                    ? frame_
@@ -90,30 +102,46 @@ public:
     const pt::ui::touch_layout::BoxRects& button_rects() const { return buttons_; }
 
     /**
-     * Adopt a device skin's scalars — the three values the PNG set does not carry: the casing fill, the
-     * button-label colour and the bezel border in skin X-units. Called by the shell when the selected
-     * skin loads or changes (device_skin.h / SETTINGS > LAYOUT skin column), so `PortraitSkin` no longer
-     * hardcodes amiga-2. Defaults (below) are amiga-2, so an un-set instance behaves as it did before
-     * selection existed.
+     * Adopt a device skin's scalars — the casing fill, the button-label colour and the bezel border
+     * in skin X-units — when the selected skin loads or changes. Defaults (below) are amiga-2.
      */
-    void set_skin(uint32_t casingArgb, uint32_t labelRgb, float bezelThicknessX) {
-        casing_    = casingArgb;
-        labelRgb_  = labelRgb;
-        bezelX_    = bezelThicknessX;
+    void set_skin(uint32_t casingArgb, uint32_t labelRgb, float bezelThicknessX, SkinArt art) {
+        casing_   = casingArgb;
+        labelRgb_ = labelRgb;
+        bezelX_   = bezelThicknessX;
+        art_      = art;
+    }
+
+    /**
+     * The LIVE tracker theme's two colours, pushed every frame (unlike `set_skin`, which changes only
+     * when the user picks a different skin). A CHROMELESS skin is drawn in these and nothing
+     * else: the ground is `background` and the keys — art and labels alike — are `textValue`, so the
+     * controls restyle themselves the moment a theme is edited or swapped, with no reload and nothing
+     * to keep in step.
+     *
+     * ⚠️ They must be pushed BEFORE `casing_argb()` and `signature()` are read for the frame, because
+     * both answer with them off the Chrome path.
+     */
+    void set_theme(uint32_t backgroundArgb, uint32_t textValueArgb) {
+        themeBg_  = backgroundArgb;
+        themeInk_ = textValueArgb;
     }
 
     /** The casing colour the whole output is cleared to before the bands composite over it — it shows
-     *  at the sides when the skin is narrower than the device (case C) and in any bottom gap. */
-    uint32_t casing_argb() const { return casing_; }
+     *  at the sides when the skin is narrower than the device (case C) and in any bottom gap. On a
+     *  chromeless skin it is the tracker's own background: there the clear is not a surround to the art
+     *  but the art's own ground, the one colour the keys sit on. */
+    uint32_t casing_argb() const { return chromeless() ? themeBg_ : casing_; }
 
     /** UNDERLAY (drawn after the casing clear, BEFORE the frame): the four chrome bands and the inner
      *  bezel the frame lands on. A missing piece is a no-op, so an incomplete theme shows casing through
      *  rather than crashing.
      *
-     *  `innerBezelArgb` fills the bezel's padded inner area — the letterbox gap around the frame. It is
-     *  the LIVE pt-ui theme's `background`, NOT black: Kotlin painted this black, but the shell matches
-     *  it to the tracker's own background so the frame and the gap around it read as one surface — the
-     *  same reasoning (and the same colour) as the landscape letterbox in `SdlVideo::present`. */
+     *  `innerBezelArgb` fills the bezel's padded inner area — the gap around the frame — with the
+     *  LIVE theme's `background`, so frame and gap read as one surface (as the landscape letterbox does).
+     *
+     *  ⚠️ A chromeless skin has no bands at all, and this draws NOTHING for one — not even the inner
+     *  fill, which would only repaint the casing colour over itself. Its ground is the casing clear. */
     void draw_chrome(SDL_Renderer* r, const Skin& skin, uint32_t innerBezelArgb) const;
 
     /** OVERLAY (drawn AFTER the frame): the ten buttons on the backing band, each in its PNG variant
@@ -122,26 +150,41 @@ public:
      *  via `draw_text` too — a real glyph, because Helvetica ships no arrows — falling back to `font`'s
      *  shell-drawn line arrow when `arrowFont` did not load. Both fonts are mutable: they cache glyph
      *  textures on first use. If `font` itself did not load, the whole cluster falls back to the 5×5
-     *  label font, so a missing .otf shows blocky labels rather than none. */
+     *  label font, so a missing .otf shows blocky labels rather than none.
+     *
+     *  The TRANSPARENT skin takes the same path, with the blit tinted and the label drawn in the
+     *  theme's TXT VALUE rather than the skin table's constant. */
     void draw_buttons(SDL_Renderer* r, const Skin& skin, Font& font, Font& arrowFont,
                       const SdlInput& input) const;
 
     /**
-     * A fingerprint of what this layout would draw, for `SdlVideo`'s C7 pixel gate — the held buttons
-     * plus the output geometry. The chrome bands are static (one theme this increment), so only button
-     * state and geometry vary. Non-zero while active (a distinct marker bit from `SdlTouch`'s), so a
-     * mode switch never collides with a landscape signature.
+     * A fingerprint of what this layout would draw, for `SdlVideo`'s pixel gate — the held buttons
+     * plus the output geometry (the chrome bands are static). Non-zero while active, with a marker
+     * bit distinct from `SdlTouch`'s, so a mode switch never collides with a landscape signature.
      */
     uint64_t signature(const SdlInput& input) const;
 
 private:
-    // The current skin's scalars, defaulting to amiga-2 (the shell's prior hardcode) so an un-set
-    // instance is unchanged. `set_skin` swaps in NORM/DARK from the device-skin table (device_skin.h)
-    // when the SETTINGS skin column changes. amiga-2: casing 0xFF56606C, white label, bezel 3 skin-X
-    // units (a bezel PNG, so density is irrelevant — see portrait2_skin).
+    // ⚠️ CHROMELESS is derived from the art set, not stored beside it: it decides the bare band layout,
+    // the theme background as ground and the tint together. A second flag would let them drift.
+    bool chromeless() const { return art_ != SkinArt::Chrome; }
+
+    /** The colour a button's art and its label are drawn in. A chromeless skin follows the live theme;
+     *  a chrome skin uses its own table constant, which is matched to its casing art. */
+    uint32_t ink_rgb() const { return (chromeless() ? themeInk_ : labelRgb_) & 0x00FFFFFFu; }
+
+    // The current skin's scalars, defaulting to amiga-2 (casing 0xFF56606C, white label, bezel 3
+    // skin-X units); `set_skin` swaps in the chosen device_skin.h row.
     uint32_t casing_   = 0xFF56606C;
     uint32_t labelRgb_ = 0xFFFFFF;
     float    bezelX_   = 3.0f;
+    SkinArt  art_      = SkinArt::Chrome;
+
+    // The live theme's two colours, used only by a chromeless skin. The defaults are a readable
+    // white-on-black, so an instance that somehow draws before `set_theme` shows the controls rather
+    // than black on black.
+    uint32_t themeBg_  = 0xFF000000;
+    uint32_t themeInk_ = 0xFFFFFFFF;
 
     bool active_ = false;
     int  outW_   = 0;

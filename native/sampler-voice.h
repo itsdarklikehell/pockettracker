@@ -36,12 +36,12 @@ struct Voice : public IAudioVoice {
     float* sampleData;
     float* sampleDataRight;  // Right channel for stereo samples (null = mono)
     int sampleLength;
-    // double, not float: float spacing reaches 1.0 at 2^24 frames (~6 min 20 s @ 44.1 kHz),
-    // where interpolation collapses to nearest-neighbour and position steps go irregular.
-    // Long WAVs / extracted video audio hit this; double costs the same on arm64 FPUs.
+    // double, not float: float spacing reaches 1.0 at 2^24 frames (~6 min @ 44.1 kHz), where
+    // interpolation collapses to nearest-neighbour. It costs the same on arm64.
     double position;
     int trackId;
     int instrId = -1;        // Instrument index (= sampleId); used for per-instrument spectrum capture
+    uint32_t sampleGen = 0;  // AudioEngine::sampleGen[instrId] when triggered; the mix ends a stale one
     float playbackRate;
     float basePlaybackRate;  // Original rate without table transpose
     float volume;
@@ -96,6 +96,26 @@ struct Voice : public IAudioVoice {
     TableLane lanes[TABLE_LANES];
     float tableTranspose;    // Current transpose from table (semitones)
     float tableVolume;       // Current volume multiplier from table (0.0-1.0)
+    // Picked up passing through INS rows (table-lanes.h); every table pitch/volume write adds/multiplies it.
+    float carrySemitones = 0.0f;
+    float carryVolume    = 1.0f;
+    // A table PAN glides to its value over PAN_GLIDE_FRAMES rather than jumping (engine-voice-ops.h).
+    float panNow       = 0.5f;
+    float panGoal      = 0.5f;
+    int   panGlideLeft = 0;
+    // …and a table VOL blends from the gain the last sample used (`volRouteLast`) over VOL_GLIDE_FRAMES.
+    float volRouteLast = 0.0f;
+    float volGlideFrom = 0.0f;
+    int   volGlideLeft = 0;
+    // A note on its way out keeps the track fader it had when a VTR on the next note's step changed
+    // it: the new note starts at the new level, the old one fades at its own. Advanced per block.
+    bool  faderHeld      = false;
+    float faderHeldStart = 1.0f, faderHeldEnd = 1.0f;
+    // The sampler's downsample is a quantized READ, not a chain module, so a change to it on a sounding
+    // note blends the old read into the new one over DOWNSAMPLE_FADE_FRAMES (engine-mix.cpp).
+    int   dsLast = 0;
+    int   dsPrev = 0;
+    int   dsFadeLeft = 0;
 
     // Note identity (used by note monitor to show playing note even across empty phrases)
     int noteOctave;          // Octave of the triggered note (0-9), -1 = none
@@ -123,10 +143,6 @@ struct Voice : public IAudioVoice {
     float noteKeytrack = 0.0f;  // (midiNote − 60) / 12.0, bipolar
     float noteRandom   = 0.0f;  // random 0.0–1.0
 
-    // Send levels (copied from instrParams at trigger time)
-    float reverbSend = 0.0f;
-    float delaySend  = 0.0f;
-
     // Fade-out instead of a hard cut. Two lengths: DECLICK_SAMPLES for voice steals (tail is
     // masked by the new note), KILL_FADE_SAMPLES for deliberate kills (see audio-defs.h).
     int fadeOutRemaining;  // Counts down from fadeOutTotal to 0 during fade-out
@@ -138,6 +154,10 @@ struct Voice : public IAudioVoice {
     // start — up to one audio burst early. The mix loop skips this many frames on the trigger
     // block, then zeroes it. Always < the trigger block's numFrames when set.
     int startDelayFrames;
+    // The fade's twin of startDelayFrames: a KIL, note-off, key release or steal dispatched at
+    // frame f of the current block starts fading at f, not at the block's first frame. The mix
+    // loop holds the counter until it reaches this frame; the engine zeroes it after every block.
+    int fadeStartFrame;
 
     Voice() : isActive(false), fadeInRemaining(0), sampleData(nullptr), sampleDataRight(nullptr), sampleLength(0),
               position(0), trackId(-1), playbackRate(1.0f), basePlaybackRate(1.0f), volume(1.0f),
@@ -153,7 +173,7 @@ struct Voice : public IAudioVoice {
               triggerOctave(4), triggerPitch(0),
               pitchOffset(0.0f), pitchSlideTarget(0.0f), pitchSlideRate(0.0f), pitchSliding(false),
               vibratoPhase(0.0f), vibratoSpeed(0.0f), vibratoDepth(0.0f), vibratoActive(false),
-              fadeOutRemaining(0), fadeOutTotal(1), isFadingOut(false), startDelayFrames(0) {}
+              fadeOutRemaining(0), fadeOutTotal(1), isFadingOut(false), startDelayFrames(0), fadeStartFrame(0) {}
               // params (ParamBus) is default-constructed: base={1,0.5,0,128,0}, mod={0}
 
     void trigger(float* sample, float* sampleRight, int length, int track, float rate, float baseFreq,
@@ -180,6 +200,10 @@ struct Voice : public IAudioVoice {
         float panAngle = pan * (float)M_PI * 0.5f;  // 0 to π/2
         panLeft = prevPanLeft = cosf(panAngle);
         panRight = prevPanRight = sinf(panAngle);
+        panNow = pan;
+        panGlideLeft = 0;
+        volGlideLeft = 0;
+        dsFadeLeft = 0;
 
         // Convert normalized 0-255 values to actual sample positions
         // Use startPointOverride if provided (Offset effect / slice start), otherwise use instrument default
@@ -201,12 +225,9 @@ struct Voice : public IAudioVoice {
         actualLoopStart = (int)(((int64_t)instrParams.loopStart * length) / 255);
         actualLoopEnd   = (int)(((int64_t)instrParams.loopEnd   * length) / 255);
 
-        // ⚠️ THE WINDOW IS CARRIED, CLAMPED, past this call. The mix loop re-derives actualStart and
-        // actualEnd from PARAM_SAMPLE_START/END every block so a mod route can move them live, and those
-        // two are the 0-255 pair — which cannot say "frame 22087". Without this the audition below
-        // STARTS in the right place (`position` is seeded from actualStart here) and then runs straight
-        // past the selection to the end of the file: the editor auditioning something CROP would never
-        // cut, which is the whole bug the frame window exists to fix.
+        // ⚠️ THE WINDOW IS CARRIED, CLAMPED, past this call: the mix loop re-derives actualStart/End
+        // from the 0-255 pair every block, which cannot say "frame 22087" — without this an audition
+        // starts at the selection and runs on to the end of the file.
         windowStartFrame = frameWindow ? actualStart : -1;
         windowEndFrame   = frameWindow ? actualEnd   : -1;
 
@@ -249,6 +270,8 @@ struct Voice : public IAudioVoice {
         tableId = tblId;
         tableTranspose = 0.0f;
         tableVolume = 1.0f;
+        carrySemitones = 0.0f;
+        carryVolume    = 1.0f;
         // The lanes themselves are placed below, once the note they may be mapped from is known.
 
         // New notes clear all pitch effects (PSL, PBN, PVB, PVX)
@@ -325,6 +348,7 @@ struct Voice : public IAudioVoice {
         isFadingOut = false;               // Clear any stale fade state from previous use
         fadeOutRemaining = 0;
         startDelayFrames = 0;              // Dispatch loop sets the real offset after trigger()
+        fadeStartFrame = 0;
         isActive = true;
     }
 
@@ -333,20 +357,16 @@ struct Voice : public IAudioVoice {
         isFadingOut = false;
         fadeOutRemaining = 0;
         startDelayFrames = 0;
+        fadeStartFrame = 0;
     }
 
-    // Begin a smooth fade-out instead of a hard stop (used by voice stealing).
-    // Keeps isActive=true so the slot remains reserved during the fade — the new
-    // note is normally allocated to a different free slot.
-    // trackId is preserved (NOT cleared) so that Step-1 in the voice allocator
-    // can recycle this fading slot directly when the same track fires again,
-    // preventing voice-count explosion during simultaneous multi-track triggers.
-    void startFadeOut(int fadeSamples = DECLICK_SAMPLES) {
+    // Begin a smooth fade-out instead of a hard stop. isActive stays true so the slot stays reserved
+    // during the fade; trackId is kept so the allocator can recycle this slot when the same track
+    // fires again. `atFrame`: the frame inside the current block the fade starts at (0 = now).
+    void startFadeOut(int fadeSamples = DECLICK_SAMPLES, int atFrame = 0) {
         if (isFadingOut) return;  // Already fading — don't restart
+        fadeStartFrame = atFrame;
         // isActive stays true: slot stays reserved for the duration of the fade.
-        // The counters are written BEFORE isFadingOut: stopTrack() calls this from the JNI
-        // thread, and the mix loop must never observe isFadingOut=true with a stale zero
-        // counter (that would end the voice with the hard cut the fade exists to prevent).
         fadeOutTotal = (fadeSamples > 0) ? fadeSamples : 1;
         fadeOutRemaining = fadeOutTotal;
         isFadingOut = true;
@@ -384,33 +404,29 @@ struct Voice : public IAudioVoice {
         return hasRelease;
     }
 
-    void noteOff() override {
-        // THE release decision for sampler voices — AudioEngine::triggerNoteOff delegates
-        // here (they used to be two drifted copies). Promote live ADSR/TRIG VOL mods
-        // (attack/decay/sustain, with a nonzero release configured) to the release stage;
-        // an already-releasing mod also counts. No release envelope → declicked kill fade.
-        if (!releaseVolMods()) startFadeOut(KILL_FADE_SAMPLES);  // deliberate note-off, not a steal
+    void noteOff() override { noteOffAt(0); }
+
+    // THE release decision for sampler voices, what a KIL's note-off calls: live ADSR/TRIG VOL mods
+    // with a release go to the release stage (an already-releasing mod counts); no release envelope
+    // → the declicked kill fade from `atFrame`. The envelope path takes no frame: the mod matrix runs
+    // once per block, so a release begins on a block edge.
+    void noteOffAt(int atFrame) {
+        if (!releaseVolMods()) startFadeOut(KILL_FADE_SAMPLES, atFrame);  // deliberate note-off, not a steal
     }
 
     /**
-     * A live KEY was let go of (MIDI plan §4.1, phase E4) — `AudioEngine::triggerKeyRelease`.
+     * A live KEY was let go of.
      *
-     * ⚠️ **IDENTICAL TO `noteOff` EXCEPT IN ONE ARM, AND THAT ARM IS THE WHOLE POINT.** A KIL means
-     * "end this note"; releasing a key does not. So:
-     *
-     *   • ADSR/TRIG with a release configured → the release stage. Same as a KIL, and the common case.
-     *   • a LOOPING voice with no release envelope → the declicked soft kill. It would otherwise loop
-     *     for ever with nothing left to end it, which is the one failure this arm exists to prevent.
-     *   • **a ONE-SHOT with no release envelope → NOTHING AT ALL.** The hit plays out. That is what
-     *     every sampler with a keyboard on it does, and cutting a snare because a finger came off the
-     *     key is the behaviour §4.1 was written to rule out.
-     *
-     * A voice with a release envelope AND a loop takes the same `loopReleasing` path as a KIL — the
-     * loop is abandoned so playback runs out into the tail while the envelope releases.
+     * ⚠️ IDENTICAL TO `noteOff` EXCEPT IN ONE ARM: a KIL means "end this note", releasing a key
+     * does not.
+     *   • ADSR/TRIG with a release → the release stage, as a KIL.
+     *   • a LOOPING voice with no release → the declicked soft kill, or it would loop for ever.
+     *   • a ONE-SHOT with no release → NOTHING: the hit plays out, as on any sampler with keys.
+     * Release envelope + loop takes the same `loopReleasing` path as a KIL.
      */
-    void keyRelease() {
+    void keyRelease(int atFrame = 0) {
         if (releaseVolMods()) return;
-        if (loopMode != 0) startFadeOut(KILL_FADE_SAMPLES);   // nothing else would ever end it
+        if (loopMode != 0) startFadeOut(KILL_FADE_SAMPLES, atFrame);   // nothing else would ever end it
         // else: a one-shot with no envelope. Deliberately silent — the sample plays to its end.
     }
 
@@ -418,6 +434,8 @@ struct Voice : public IAudioVoice {
 
     void setPan(float pan) override {
         params.setBase(PARAM_PAN, pan);
+        panNow = pan;
+        panGlideLeft = 0;
         float angle = pan * (float)M_PI * 0.5f;
         panLeft = prevPanLeft = cosf(angle);
         panRight = prevPanRight = sinf(angle);
@@ -445,9 +463,7 @@ struct Voice : public IAudioVoice {
         playbackRate = basePlaybackRate * powf(2.0f, semitones / 12.0f);
     }
 
-    // render() is intentionally not implemented on Voice — the mixer loop in
-    // processAudioBlock handles Voice rendering inline for cache efficiency.
-    // SoundfontVoice will implement render() fully.
+    // Not implemented on Voice: processAudioBlock renders sampler voices inline.
     float render(float* /*buf*/, int /*numFrames*/) override { return 0.0f; }
 
     // ── Pitch effect interface (IAudioVoice) ────────────────────────────────

@@ -66,7 +66,12 @@ Everything a user sees is drawn by `pt-ui` into a software framebuffer.
 
 ```
 native/                            The portable program
-├── audio-engine.cpp / .h          The engine: processAudioBlock, voices, modulation, DSP
+├── audio-engine.cpp / .h          The engine: lifecycle, scheduling, modulation, meters, buses
+├── engine-mix.cpp                 processAudioBlock: the queue drain, the triggers, every voice's mix
+├── engine-tables.cpp              The table walk, the INS chain, the TABLE screen's row readout
+├── engine-samples.cpp             The sample pool: loading, clearing, the memory count
+├── engine-soundfont.cpp           The SoundFont bank: parsing a preset, the slot cache
+├── engine-voice-ops.h             Per-voice writes the table walk and the drain share
 ├── audio-decoders.cpp / .h        WAV, MP3, FLAC, OGG, Opus, M4A decoding
 ├── sampler-voice.h                Per-voice state for sample playback
 ├── soundfont-voice.cpp / .h       Per-voice state for SF2/SF3 (TinySoundFont — see the note below)
@@ -82,6 +87,9 @@ native/                            The portable program
 │   ├── primitives/                  biquad, filter, vendored DaisySP
 │   └── modules/                     FilterModule, DriveModule, BitcrushModule, DustChain
 │
+├── common/                        Below every layer: pt_fopen and the URI hooks, the memory
+│                                  probe a load asks first, a slow load's progress and cancel
+│
 ├── songcore/                      Header-only, platform-free. No SDL, no JNI, no POSIX.
 │   ├── model.h                      Project, Chain, Phrase, Table, Groove, Instrument, Note
 │   ├── project_io.h                 .ptp / .pti parse + emit (minified), and JsonWriter
@@ -89,6 +97,7 @@ native/                            The portable program
 │   ├── timing.h                     frames_per_step / _tic, groove timing, transpose
 │   ├── effects.h                    Effect codes, names, EFFECT_TYPES, resolve_step_params
 │   ├── automation.h                 AUS/AUF: the automatable registry, the curve, the pairing
+│   ├── table_automation.h           AUS/AUF over a table's rows — shared by the engine and the editor
 │   ├── traversal.h                  Song walks, collect_used_instruments
 │   ├── rng.h                        PCG32, seeded and bounded like kotlin.random
 │   ├── event.h                      The event schema (versioned, frozen)
@@ -110,7 +119,9 @@ native/                            The portable program
     ├── platform_caps.h              Which features this build has (a VALUE, not an #ifdef)
     ├── screen.h / navigation.h      Screens and the R+DPAD navigation grid
     ├── cursor.h / cursor_move.h     CursorContext: what is under the cursor, and how it steps
-    ├── input_dispatcher.cpp / .h    Every button and combo, one place
+    ├── input_dispatcher.cpp / .h    Every button and combo: one class, its spine here
+    ├── dispatch/                    …and its per-screen halves (chords, buttons, browser,
+    │                                sample editor, project, midi, sub-screens, theme/scale/groove)
     ├── selection.h / clipboard.*    Multi-cell selection and copy/paste
     ├── layout.cpp / .h              Screen composition, top strip, right bar
     ├── theme.h / theme_io.h         Palettes and the theme file
@@ -194,9 +205,18 @@ a headless tool drive any platform's UI and compare the results.
 
 A sample-accurate queue system in C++.
 
-- **44.1 kHz stereo.** Android uses Oboe (OpenSL ES Exclusive → Shared → None/Shared → AAudio
-  Exclusive); every other platform uses SDL audio.
-- **The audio device is opened exactly once**, at startup, and never reopened.
+- **Stereo float, at the device's own rate.** A rate is asked for, never assumed: whatever the device
+  negotiates is what the engine is told, and every pitch ratio and filter coefficient is derived from
+  it rather than from a constant. Android uses Oboe (AAudio Exclusive, which takes the direct MMAP
+  path where the device has one, then OpenSL ES Exclusive → Shared → None/Shared); every other
+  platform uses SDL audio. A device whose AAudio open ever took over 3 s stays on OpenSL ES — a
+  marker file in private storage, written before the attempt, so a hang counts too.
+- **The audio device is opened once, at startup.** It is reopened only by the frame loop — after
+  Android backgrounds the app with nothing playing, or when the backend reports the device lost.
+- **On Android the frame loop keeps running off the screen** (`SDL_HINT_ANDROID_BLOCK_ON_PAUSE` off),
+  drawing nothing, so a song left playing is still fed by the lookahead pump. It may keep its stream
+  only while the playback foreground service holds the process — a frozen process loses its stream
+  silently — and that service is started by Java in `onPause`, the last moment Android allows it.
 - `AudioEngine` **must be heap-allocated** — its DSP scratch buffers, spectrum rings and 256-slot
   table pool blow a 1 MB stack instantly.
 
@@ -216,6 +236,16 @@ queue it came from. Draining each queue to exhaustion in turn would collapse the
 index and apply them in queue order instead, which silently drops every effect whose note has not
 started yet.
 
+**The audio thread waits for nothing, allocates nothing and frees nothing, and the UI never writes
+what it reads.** A setter records its value and publishes it — per-instrument data and the tables in a
+two-sided copy (`StagedTable`, `TableStore`), the bus settings as one sequence-locked record whose
+groups each carry a number — and the block takes it in right after the queues drain, so an edit made
+before an event was queued is in force when that event runs. The screen reads the voices the same
+way, from a view the block publishes as it ends. What has to be built or freed goes by handover
+instead: a reverb engine is built by the control thread and taken at the next block, a SoundFont is
+closed only after the block that might hold its handle has ended, and a replaced sample buffer ends
+the voices still pointing at it through a per-slot generation rather than a stop from the UI.
+
 ### Signal path
 
 ```
@@ -230,17 +260,10 @@ Reverb and delay are **send buses**, not inserts: a per-note or per-instrument s
 them, and the delay can additionally feed the reverb. Both have their own input EQ. `-1` is the
 documented bypass value for every EQ slot.
 
-The reverb holds **two algorithms resident at once and sounds one of them**, chosen by a per-project
-`reverbAlgo` whose number is its identity — append, never insert, and 0 is the algorithm that shipped.
-Only the tail is switched: the pre-delay ring and the mid/side width pair sit **outside** both, so PRE
-and WIDE have one implementation and one meaning either way. ⚠️ The other three cells do **not** cross
-— each algorithm owns its own reading of SIZE, DAMP and MOD, which is why every mapping is a named
-function in `reverb-presets.h` rather than arithmetic inside `setParams`. Switching the cell rewrites
-none of them. Two further cells belong to the second algorithm alone and are the screen's only
-conditional rows: they are stored and serialized whatever is selected, and **hidden rather than drawn
-dead** while the first is (`effects_row_layout.h` — skipped, never renumbered). ⚠️ Both being resident is deliberate: only one can sound, but a swap cannot allocate or
-free on the audio thread, so the ~390 KB is paid inside an `AudioEngine` that is heap-allocated for
-exactly this class of reason.
+The reverb's SIZE stretches all eight of its delay lines by one factor, and ⚠️ **the loop gain is
+derived from DCAY and SIZE together** — a gain is a loss per pass, so the same gain in a longer room
+is a longer tail. The lines are sized once for the largest room, so a SIZE edit is a glide of the read
+heads rather than a reallocation or a clear, and the default cell is exactly the room that shipped.
 
 Note where the two faders sit relative to that tap. A send is **pre-fader with respect to the track
 fader** and post-everything on the instrument, so pulling a track down leaves its tails alone. The
@@ -336,6 +359,20 @@ return must not stop a track. A soloed return silences the dry mix through one g
 bus, placed below every send tap and above the returns. Expressing that as eight track mutes would
 starve the return being soloed: the SoundFont send tap sits below its track's gate, and the offline
 render skips an inaudible track outright, so the reverb would be soloed into silence.
+
+**A song row the walk cannot enter is the end of a BLOCK, and the boundary is derived in one place.**
+A track runs its own run of consecutive playable cells and loops back to that run's first row for
+ever; there is no whole-song restart, and therefore no unit of work that moves all eight tracks at
+once. That mattered structurally: the restart needed a rollback record of its own precisely because it
+was the one multi-track unit, and a per-track loop is an ordinary unit with an ordinary checkpoint
+behind it. ⚠️ A cell naming a chain whose **first** row is empty is a boundary too — the one case
+where "the cell names a chain" is not enough — while a later hole in the same chain is still walked
+over. Three sites ask the question (the start, the step down, the walk back up) and all three ask the
+same predicate, so none of them can drift.
+
+⚠️ **The bounded walk and the unbounded one are the same function**, told apart by whether a last row
+was supplied: a block that loops for ever has no length, so a render would never end. An export plays
+its range once through and a track that meets a boundary inside the range is finished there.
 
 **LIVE mode is a modifier on SONG, not a fifth transport mode.** The mode changes only what happens at
 a track's boundary — a launched song row re-enters itself instead of the cursor moving down the column
@@ -472,13 +509,27 @@ note-on on a track names it. Both consumers use the same resolver, so they canno
 All three shipping platforms have MIDI in and out (winmm on Windows, ALSA on Linux, the Android MIDI
 API on Android), with a 24 PPQN clock, transport messages and song-position pointer.
 
-**The MIDI authoring surfaces are hidden in release builds** (`PlatformCaps::midi`). A release build
-cannot create MIDI data — no MIDI screen, no EXTERNAL instrument type, no MIDI effect commands — but
-it displays existing data faithfully, because all three are persisted in a `.ptp` and a build that
-drew them as something else would misrepresent the file on disk.
+**MIDI in is drained on the audio thread.** A port's bytes land in a lock-free ring; the engine
+empties it at the top of every live block, parses, routes and puts each record into its own queues
+stamped at that block's first frame, so a key sounds in the block after its bytes arrive. The router
+never reads the project: it reads a `MidiRoute`, a flat snapshot of the routing facts the host builds
+on the UI thread and publishes through a sequence lock whenever they change. Everything that needs
+the project — the controller mappings, MIDI thru, the counters a screen shows — runs on the UI thread
+from a second ring the drain fills, one poll behind the sound. The engine resolves a live note from
+the same copies it resolves a sequenced one from, which is why every table and instrument setting is
+pushed when it changes rather than a note ahead of when it is needed.
 
-The loop-window pair — the `LPO` effect and the `osc` loop mode — is held back the same way
-(`PlatformCaps::loopWindow`), on the same authoring-only terms. Hiding an effect works only on a
+A project also carries the **controller mappings** — which knob moves which parameter. The drain
+withholds a claimed controller from the tracks and the host applies it to the song, neither behind
+the screen that authors it. The channel those knobs arrive on is in `settings.json` instead, because
+it describes the cable on this desk rather than the song.
+
+The `osc` loop mode is held back from release builds (`PlatformCaps::loopWindow`) on authoring-only
+terms: a build that hides it cannot create it, but displays and plays a project that has it, since
+drawing persisted data as something else would misrepresent the file on disk. The MIDI authoring
+surfaces sit behind the same kind of flag (`PlatformCaps::midi`), on in every shipping profile, and
+the `LPO` effect behind `loopWindow` as well — which is why it shows wherever MIDI does. Hiding an
+effect works only on a
 **tail** of `EFFECT_TYPES`: a cell stores an index into that array while a `.ptp` stores the effect
 *code*, so shortening the list leaves every remaining index naming the effect it always named. `LPO`
 sits directly below the MIDI six for that reason, which also means the two trims nest — nothing can
@@ -502,7 +553,7 @@ Project
 ├── chains[256]           16 phrase slots + a transpose each
 ├── phrases[256]          16 steps: note, volume, instrument, 3 × (FX type, FX value)
 ├── tables[128]           16 rows: transpose, volume, 3 × (FX type, FX value)
-├── grooves[128]          16 step lengths in tics
+├── grooves[128]          16 step lengths in tics, and a name
 ├── instruments[128]      sampler | SoundFont | external
 ├── eqPresets[128]        the shared EQ slot bank
 ├── mixer, master bus, reverb, delay
@@ -557,7 +608,7 @@ resolves that to a document URI internally. The id is derived rather than stored
 the grant list on any boot in any order.
 
 **A second seam sits below the UI**, because samples, SoundFonts, projects and the WAV writer open
-paths directly rather than through the interface. `byte_source.h` provides `pt_fopen`, `pt_remove` and
+paths directly rather than through the interface. `common/byte_source.h` provides `pt_fopen`, `pt_remove` and
 `pt_rename`: a plain path takes libc's branch, a URI is handed to a host-installed hook. The decision is
 derived from the string, once, below every call site — not repeated at each of them. On every platform
 but Android no hook is installed and all three are a rename of the libc call.
@@ -621,7 +672,7 @@ that says so.
 
 ## Input Layer
 
-`ui/input_dispatcher.cpp` is every button and combo in one place.
+`ui/input_dispatcher.*` and `ui/dispatch/` are every button and combo — one class, split by screen.
 
 **Modifiers are snapshotted at EVENT time, not at poll time.** SDL delivers a whole frame's events at
 once, so asking "is A held?" while processing a B press describes the *end* of the frame. Roll B and
@@ -637,6 +688,16 @@ delete, insert), its range and its step sizes. The five generic handlers (`on_a`
 `on_a_left`, `on_a_right`, `on_a_b`) turn a button into an `InputAction` without ever asking which
 screen is up.
 
+That makes a cursor position a **seat and not a name**, which is fine for editing and not enough for
+anything that has to be *stored*. MIDI mapping is the one feature that needs the name, so three
+screens answer a second question beside `cursor_context()` — what this cell is CALLED, from an
+append-only catalogue — and decline everywhere else. The same seat is a different parameter on two
+instrument types, so a stored `(row, column)` would point somewhere else after a type change.
+
+⚠️ MIDI learn is also **the one gesture the combo matrix cannot resolve**: it is "hold R and turn a
+knob", and a knob is a CC on a cable that never becomes a button event. The matrix publishes R's held
+state and nothing more; the arm lives on the host, which is the layer the MIDI drain can reach.
+
 ---
 
 ## Rendering and Export
@@ -649,13 +710,25 @@ a WAV.
   a different project rendered in between. Engine state surviving from one render to the next was a
   real bug; back-to-back renders would be the weaker test.
 - **The tail is appended**: a render whose last note is still ringing continues until the audio
-  decays to zero, rather than stopping dead at full amplitude. A runaway cap bounds it.
+  decays to zero, rather than stopping dead at full amplitude. A runaway cap bounds it. ⚠️ What ends
+  the notes at the range's last frame is a **KIL, not a key release** — a key release is defined to
+  leave a one-shot alone so a live keyboard cannot cut a drum hit short, and at the end of a render
+  that is the one place the definition is wrong.
+- **A repeat is one scheduling pass**, never a file joined to itself: the engine is not told the range
+  ended, so tails and table positions cross every seam. ⚠️ Every track restarts at the **longest**
+  one's end rather than its own — blocks of unequal length drift apart within a pass, so per-track
+  restarts would compound that drift with each repetition.
+- **The row range is resolved once, above the stem loop**, and held. Recomputing it per pass is a set
+  of stems that no longer line up. The same range decides which tracks earn a stem at all, so
+  exporting one part does not write a silent file per track that plays elsewhere in the song.
 - **Live and render must be identical.** `push_live_params` and `prepare_render` push the same
   parameters, and a standing test asserts a live-configured engine and a render-configured engine
   produce byte-identical audio. They did not always: the shell once played a project on the engine's
   factory defaults while rendering it correctly.
 
-Export modes: full mix, per-track stems, and resampling a song selection into a new sample.
+Export modes: full mix, per-track stems, and resampling a song selection into a new sample. The first
+two are one modal panel over the PROJECT screen with the output chosen on the way in, rather than two
+actions that render on the spot.
 
 ---
 
@@ -683,8 +756,15 @@ delivers every press twice by two paths with conflicting meanings.
 
 **Renderer creation falls back.** `SDL_RENDERER_ACCELERATED` means *require*, not *prefer*, so
 `SDL_CreateRenderer` fails outright on hardware with no accelerated driver. The shell tries
-accelerated+vsync → accelerated → anything, and paces the frame itself when there is no vsync (a spun
-core is a battery bug on a handheld).
+accelerated+vsync → accelerated → anything.
+
+**The frame loop runs at two rates, and it owns the only wait.** Input, incoming MIDI and the
+sequencer's refill are pumped every few milliseconds; the drawing, and the per-frame derivations that
+feed it, run once per refresh. Nothing else may pace the loop — with vsync `SDL_RenderPresent` blocks,
+but a tick that draws nothing never reaches it, and a spun core is a battery bug on a handheld. The
+next frame is anchored on the present's *return*, which is a vblank: a deadline that is a fraction
+short of the real refresh walks into the vblank a frame at a time until the present is blocking most
+of a refresh with nothing being polled behind it.
 
 **Signal handling: a handler may only set a flag.** "SIGTERM → autosave" read literally is a heap-lock
 deadlock — hundreds of KB of JSON, none of it async-signal-safe — which hangs in exactly the case it

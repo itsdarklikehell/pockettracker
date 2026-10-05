@@ -7,10 +7,10 @@ Everything you can do with PocketTracker.
 ## Making Music
 
 - Write melodies and rhythms in a 16-step phrase editor, chain phrases into longer patterns, arrange everything in an 8-track song
-- LGPT-style controls: directional buttons + modifier combos, fast editing with A+direction for value changes, key repeat for scrolling through values quickly
+- Controls built for a D-pad and a few buttons: modifier combos, fast editing with A+direction for value changes, key repeat for scrolling through values quickly
 - Transpose phrases per chain slot — sequence the same phrase in different keys
-- Select cells, rows, or entire screens and copy, cut, paste, or delete them (M8-style selection)
-- Set swing and shuffle per track or globally with groove patterns
+- Select cells, rows, or entire screens and copy, cut, paste, or delete them
+- Set swing and shuffle per track or globally with groove patterns, written as a tick length per phrase step. Start from the built-in list — straight, the twelve classic swing settings a drum machine offers, triplets, half and double time — or bend a pair yourself with the quantize aid, which moves one step and its partner the other way so the bar line stays put, and reads back the swing as a percentage. Save your own to `PocketTracker/Grooves` as files you can rename, edit and carry between devices
 - Build up to 16 scales per project by switching each of the twelve notes on or off, and set the song's key. A track using a scale plays only the notes in it: anything out of the scale is moved to the nearest note that is in, both as you type and as the song plays, so a phrase written before you chose the scale falls into it. The scale screen marks the note being heard; sliced instruments are left alone, and any instrument can be taken out of transposition entirely with its TSP switch
 - Start from 38 built-in scales — the modes, the pentatonics, the bebop and diminished scales, and a set of Japanese and Indian ones — and save your own to `PocketTracker/Scales` as files you can rename, edit and carry between devices
 - Set the tempo by feel: RIGHT from the tempo value on the PROJECT screen reaches a TAP button — press A in time and the number follows your taps
@@ -18,6 +18,7 @@ Everything you can do with PocketTracker.
 - 256 phrases, 256 chains, 8 tracks, 128 grooves
 - Use HOP to jump between phrases mid-sequence — create odd time signatures and generative loops
 - Every track runs its own column of the song at its own pace: all 8 start together, then each moves on as soon as its own chain ends, so a 2-row chain beside a 16-row one loops eight times instead of waiting. A `>` marker on the song, chain and phrase screens shows where each track has got to
+- Keep several sketches in one project: a track plays down its column until it hits an empty cell, then loops the run of cells it is in. A song row left empty on all 8 tracks therefore splits the arrangement into parts that never play into one another — park an idea further down the song and it stays isolated until you start it. Nothing waits for anybody, so parts of different lengths drift apart; a track that should go quiet for a few bars and come back in step needs a chain of empty phrases there rather than a gap
 - LIVE mode (B+LEFT/RIGHT on the song screen): the song grid becomes a scene launcher. START queues the chain under the cursor to start when that channel's current chain ends, pressed again to start at the next bar instead; a launched chain repeats until you queue something else. L+START launches the whole row as one scene, R+START silences a single channel, and a blinking marker shows what is waiting
 
 ## Sequence Effects
@@ -49,6 +50,8 @@ Write these into any phrase step to shape how a note plays:
 - **EQ (per note / mixer)** — apply an EQ preset to one note, or automate the master EQ across the song
 - **Chance** — probability gate: set odds the note actually plays
 - **Randomize** — randomize any other FX value on the fly
+- **Instrument per note** — play a note on another instrument from an FX cell; with Randomize beside it,
+  each note picks an instrument at random
 - **Table override** — switch which table an instrument follows
 - **Groove assign** — set groove pattern per track from a phrase step
 - **Scale (track / global)** — move one track, or all eight, onto one of the project's scales and a key
@@ -67,6 +70,7 @@ Write these into any phrase step to shape how a note plays:
 Each instrument has its own 16-row mini-sequencer. It loops continuously while the note plays and lets you automate volume, pitch, and effects row by row — great for programmed arpeggios, tremolo, and rhythmic gating without using up phrase FX slots.
 
 - EQ per note and master EQ from a table row, alongside the filter cells
+- Hand a note on to another instrument from a table row — that instrument brings its own table, so one hand-off can lead to another; at one row per trigger a column of them rotates through instruments
 - Effect automation in a table too — mark a start and a finish **row** and the value between them glides; HOP steers the fade, so a looped section can restart or continue it
 
 ## Instruments
@@ -110,18 +114,22 @@ Record what's currently playing in the sequencer into a new sample — capture a
 - The same chord works on the REV and DEL return strips: mute a send to drop it out of the mix, or solo one to hear the reverb or delay on its own while the tracks go on feeding it
 - True dBFS peak meters per track
 - Two send effects: a reverb and a stereo delay
-- Two reverb algorithms, chosen per project: OLD, an even wash, and MVERB, a denser tail with audible early reflections, its own room size and decay, and a density control
+- Reverb room size and decay set separately — a small room can ring long, a big one die fast
 - Reverb character: pre-delay, stereo width and tail modulation — with TYPE presets (ROOM, HALL, CAVE) that set the whole section at once
 - Delay character: ping-pong repeats, repeat tone and tape wobble — with TYPE presets that set all three at once
+- Push the delay's feedback past `E0` and it self-oscillates — the repeats bloom into a steady singing tone that carries on after the input stops
+- Write the delay time from a phrase or a table with `TIM`, and fade it with AUS/AUF — the repeats bend in pitch as the time moves, like a tape delay
 - Route delay output into the reverb — wet delay signal feeds the reverb input with no extra latency
 - Reverb and delay each have their own 3-band EQ
 - Master bus: OTT 3-band compressor or DUST (lofi/vinyl texture) — switchable, with wet/dry depth control — followed by a soft peak limiter
 - Per-instrument EQ also accessible from the instrument screen
+- On Windows, play through an ASIO driver for low-latency sound from an audio interface (SETTINGS → AUDIO OUT)
 
 ## Export
 
 - Export the full song mix as a stereo WAV file
 - Export each track as a separate stereo WAV stem, with reverb and delay send returns rendered alongside
+- Choose which song rows go into the file, and how many times they are played into it — R+UP/DOWN steps the range from one part of the song to the next, so one sketch out of several exports on its own. A repeat is played through again in the same pass, so reverb tails and delay repeats carry across the join
 - Offline render: same DSP chain as real-time playback, sample-accurate
 
 ## File Management
@@ -148,7 +156,7 @@ Record what's currently playing in the sequencer into a new sample — capture a
 
 ## Controls
 
-- Help on SELECT: a tap describes the cell under the cursor in the visualizer strip
+- Help on SELECT: a tap describes the cell under the cursor, in the visualizer strip or on a full help screen (SETTINGS → HELP)
 - Effect picker: hold A on an FX type to browse the commands grouped by what they act on, reading what each one does before you let go
 - Song-relative navigation, on by default: B+D-pad walks the arrangement instead of the 00–FF pools, so the chain and phrase on screen are always the ones the song plays (SETTINGS → NAV = POOL restores the old behaviour)
 - Full physical button support (tested on Miyoo Flip and Ayaneo Pocket Air Mini)
@@ -156,3 +164,4 @@ Record what's currently playing in the sequencer into a new sample — capture a
 - Virtual button clicks: choose a sound and volume
 - Haptic feedback on button press (toggle on/off)
 - Auto-detects physical vs touchscreen device on launch
+- Android: a playing song keeps playing when you switch apps or turn the screen off, with Stop in the notification

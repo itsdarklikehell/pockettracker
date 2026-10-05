@@ -69,10 +69,10 @@ PocketTracker holds no storage permission, so it can only see folders you hand i
 > ADD FOLDER...
 ```
 
-Press **A** on it. Android's own folder picker opens; pick a folder and confirm. That folder becomes PocketTracker's home, and the app creates its six sub-folders inside it the moment it needs them:
+Press **A** on it. Android's own folder picker opens; pick a folder and confirm. That folder becomes PocketTracker's home, and the app creates its eight sub-folders inside it the moment it needs them:
 
 ```
-Projects/  Samples/  Renders/  Soundfonts/  Instruments/  Themes/
+Projects/  Samples/  Renders/  Soundfonts/  Instruments/  Themes/  Scales/  Grooves/
 ```
 
 Anything already in the folder is left exactly as it is — so if you have used PocketTracker before, pick your existing `Documents/PocketTracker` and every project, sample and theme is where it was.
@@ -88,13 +88,17 @@ That top-level list of granted folders is a screen with two gestures of its own,
 
 | | |
 |---|---|
-| **SELECT + A** | **Make this the home folder.** The app's six sub-folders move to it — meaning it starts *looking* in the new place; nothing on disk is moved or copied. Confirm with **A**. |
+| **SELECT + A** | **Make this the home folder.** The app's eight sub-folders move to it — meaning it starts *looking* in the new place; nothing on disk is moved or copied. Confirm with **A**. |
 | **SELECT + B** | **Forget this folder.** Hands the access back to Android and removes the row. Confirm with **A**. |
 
 The folder currently in use is marked `(HOME)`. One whose directory has been deleted or unplugged since you granted it is marked `(MISSING)` — the app will not use a missing folder as its home, and `SELECT + B` is how you clear the row.
 
 > [!IMPORTANT]
 > **FORGET is not DELETE.** It gives up a permission; every file in the folder stays exactly where it is, and you can grant the same folder again at any time. Nothing in this list can delete your files — `SELECT + B` means DELETE on ordinary files and folders, but on a granted folder it can only ever mean forget.
+
+### Playing in the background
+
+A song that is **playing** when you switch to another app or turn the screen off keeps playing, with a PocketTracker notification that has a **Stop** button. A stopped song stays stopped. On Android 13 and later the app asks once, on first launch, whether it may show notifications — without that permission the song still plays on, but the notification and its Stop are hidden.
 
 ### Sample files
 
@@ -125,7 +129,7 @@ Resampled instruments and CHOP exports are saved to:
 <home>/Samples/Chops/{name}/
 ```
 
-On Linux, Windows and PortMaster handhelds there is no folder to choose: the app owns a `PocketTracker` folder of its own and the same six sub-folders live in it.
+On Linux, Windows and PortMaster handhelds there is no folder to choose: the app owns a `PocketTracker` folder of its own and the same eight sub-folders live in it.
 
 ---
 
@@ -260,9 +264,13 @@ Both keyboard and gamepad work simultaneously.
 
 #### Help on SELECT
 
-Tap **SELECT** and the visualizer strip at the top of the screen becomes three lines describing the cell the cursor is on. Any other button puts it away.
+Tap **SELECT** for help on the cell the cursor is on. **SETTINGS → HELP** chooses what you get:
 
-The panel uses the theme's **VIZ BG** and **VIZ WAVE** colours. It is not available on the file browser or the sample editor — both of those use the whole screen and have no visualizer strip.
+- **SHORT** — the visualizer strip at the top of the screen becomes three lines describing the cell. Tap **SELECT** again, or press any other button, to put it away. On the sample editor it appears in place of the waveform. The file browser has no room for it, so there it shows nothing.
+- **FULL** — a help screen over everything: the same text, and a longer description where one has been written. Any button closes it, and that press does nothing else.
+- **OFF** — **SELECT** shows no help.
+
+The strip uses the theme's **VIZ BG** and **VIZ WAVE** colours.
 
 ---
 
@@ -370,7 +378,7 @@ Works on the SONG and MIXER screens, while playing or stopped.
 | R + B | Mute / unmute the channel under the cursor |
 | R + A | Solo / unsolo it |
 | R + B or R + A over a selection | Applies to every track the selection covers |
-| L + R | Restore full playback on all tracks |
+| L + R | Restore full playback — every track and both send returns |
 
 The sound stops the instant you press, notes already ringing included.
 
@@ -424,6 +432,13 @@ PROJECT
 - A **PHRASE** is a short pattern of 16 steps — like a bar of music.
 - A **CHAIN** is a sequence of up to 16 phrases. Each phrase slot can have a **transpose** value to shift pitch without duplicating the phrase.
 - The **SONG** arranges chains across 8 tracks. All 8 start together on the row you press START from, and each then moves down its own column as its own chains end.
+- A track moves down its column until it reaches an empty cell, then loops back to the top of the run of cells it is in and plays it again. A song row left empty on **all 8 tracks** therefore splits the arrangement into separate **parts**, and a part loops until you press STOP — so one project can hold several unrelated sketches that never play into each other.
+
+> [!NOTE]
+> Nothing waits for anybody. Two parts of different lengths drift apart as they loop, and a track
+> whose cell is empty on the row you pressed START from stays silent for that run. To drop a track
+> out for a few bars and bring it back in step, put a chain of empty phrases in those rows rather
+> than leaving a gap.
 
 All values (chain IDs, phrase IDs, instrument IDs, etc.) are hexadecimal, ranging from `00` to `FF`.
 
@@ -720,8 +735,9 @@ The waveform fills the top portion of the screen. A playback cursor shows the cu
 |---|---|
 | R + UP/DOWN | Zoom in / out, from any row |
 | A + LEFT/RIGHT | Zoom in / out (cursor on the ZOOM cell) |
-| D-pad LEFT/RIGHT | Scroll the view (when zoomed in) |
 | START | Preview current sample (respects SOURCE mode) |
+
+Zoomed in, the view centres on the marker the cursor is on, and follows the playback cursor when the audio would leave the view.
 
 ### Selection
 
@@ -729,8 +745,9 @@ Move the selection start and end markers to define a region for operations.
 
 | Input | Action |
 |---|---|
-| D-pad (on start/end marker row) | Move the active marker |
-| A + UP/DOWN | Jump marker by large step |
+| A + LEFT/RIGHT (on START or END) | Move that marker by a fine step |
+| A + UP/DOWN | Move it by a coarse step |
+| A + B | Put it back at the start / end of the sample |
 
 A moved marker lands on the nearest **zero crossing** — the quietest place to cut, so a loop or a crop does not click. LEFT and RIGHT search their own channel, MONO the downmix, and STEREO looks for a frame where **both** channels are quiet.
 
@@ -752,8 +769,10 @@ These modify the waveform in memory (UNDO is available after each operation).
 |---|---|
 | CROP | Trim sample to current selection. |
 | COPY | Copy selection to clipboard. |
-| CUT | Copy selection to clipboard and silence it. |
+| CUT | Copy selection to clipboard and remove it — the sample gets shorter. |
+| DUPL | Copy the selection and add it on to the end of the sample. |
 | PASTE | Insert clipboard at selection start. |
+| DEL | Remove the selection without copying it. |
 | NORMALIZE | Scale amplitude so peak = 0 dBFS. |
 | FADE IN | Apply a linear fade-in over the selection. |
 | FADE OUT | Apply a linear fade-out over the selection. |
@@ -924,8 +943,8 @@ threes under a volume moving in fours.
 0A   00   --   ---  00  AUF F0   ---  00   ← arrive at F0 eight rows later
 ```
 
-A table `AUS` can move **VOL**, **CUT**, **RES**, **LPF**, **HPF**, **BPF**, **END**, **DRV**, **FIN**,
-**EQN** and **EQM**; anything else to its left is
+A table `AUS` can move **VOL**, **PAN**, **CUT**, **RES**, **LPF**, **HPF**, **BPF**, **DRV**, **FIN**,
+**TIM**, **EQN** and **EQM**; anything else to its left is
 passed over. The fade follows the playhead of the column holding the value it is moving — `CUT` in
 FX1 above, so that fade runs at FX1's speed whichever column the `AUS` sits in. **HOP steers it** —
 back to the `AUS` row restarts it, into the middle picks it up there, past the `AUF` ends it. A `TIC`
@@ -958,10 +977,26 @@ Navigate here: **R+UP** from PHRASE or CHAIN (column 2).
 A groove is a list of up to 16 tick values. The track cycles through the list: step 1 takes groove row 0 ticks, step 2 takes groove row 1 ticks, and so on. The list loops when exhausted.
 
 ```
-     TIC
-00   0C    ← 12 ticks (even)
-01   --    ← end of list, loop
+GROOVE 00                     LEN: 2
+
+     TIC        STRAIGHT
+00   0C         SAVE  LOAD
+01   0C         QNT   1/16
+02   --         SWG   50.0%
+03   --
 ```
+
+A new groove holds **two steps of 12 ticks**, which is the pair swing works on. It plays exactly the same as no groove at all, so a fresh groove changes nothing until you edit it. Clearing both rows with A+B gives an empty groove, which also plays even.
+
+`00` is a real value and means **skip this row**: the phrase row is not played and takes no time. That is what makes triplets fit — see below.
+
+### The panel
+
+| Row | What it does |
+|---|---|
+| Name | The groove this slot was taken from. A+LEFT/RIGHT steps through the built-in grooves and loads the one you land on. **SAVE** and **LOAD** write and read groove files — see below. A `*` means the ticks no longer match the name. |
+| QNT | The quantize pointer — see below. |
+| SWG | Read-only. How long the first half of the group is, as a share of the whole. `50.0%` is even, `66.7%` is a triplet feel. It follows the **TIC** cursor, not the panel, so changing QNT never moves the number. |
 
 ### Swing example
 
@@ -974,15 +1009,36 @@ A groove is a list of up to 16 tick values. The track cycles through the list: s
 
 ### Triplet example
 
+Three triplets fill one beat, but a phrase always counts **four** rows to a beat. The fourth row is `00` — skipped, costing no time — so the three notes sit in the four-row space the grid already draws and the phrase stays the same length as every other track's:
+
 ```
      TIC
-00   08
-01   08
-02   08
-03   --    ← 3 × 8 = 24 ticks = same total as 2 × 12
+00   10
+01   10
+02   10
+03   00    ← skipped: 16+16+16 = 48 ticks over 4 rows, same as 4 × 12
+04   --
 ```
 
-Default: all grooves start empty. An empty groove plays even timing (12 ticks per step, no swing).
+> [!NOTE]
+> Sixteenth-note triplets cannot be written this way, and there is no preset for them. Three of them fill an *eighth*, which is only two rows — so they would need three played rows inside a two-row space, and a `00` can only ever add a row, never remove one. They are still possible by typing ticks by hand on a phrase whose length you have chosen to suit them.
+
+### QNT — keeping the bar in place
+
+Set it on the panel with A+LEFT/RIGHT, or with **B+UP/DOWN** from anywhere on the screen. It is an editing aid only: nothing is saved with the song, and it goes back to OFF when the app starts or a project loads.
+
+| QNT | A+D-pad on a tick row |
+|---|---|
+| OFF | Moves that one step on its own. A+LEFT/RIGHT by 1, A+UP/DOWN by 16 |
+| 1/16 · 1/8 · 1/4 · 1/2 | Moves the step by 1 **and its partner the other way by 1**, so the pair still adds up and the bar line does not shift |
+
+Armed, both A axes do the same move of 1, because one tick is exactly one step on the classic swing ladder. Any edit that would push either side outside `00`–`FF` is refused outright rather than half-applied. OFF is what you want for lengthening a single step, or for typing a `00`.
+
+### Built-in grooves, and groove files
+
+The name row cycles a built-in list: **STRAIGHT**, the six `16TH` and six `8TH` swing settings (54 / 58 / 62 / 66 / 71 / 75, the same numbers drum machines have used since the MPC60 — each one tick apart), then **TRIPLET 8**, **TRIPLET 4**, **HALFTIME** and **DOUBLETIME**. Landing on one replaces every tick in the slot, so save a groove you have built before stepping off it.
+
+**SAVE** names the slot and writes it to `PocketTracker/Grooves` as a `.ptg` file; **LOAD** reads one back into the slot you are looking at. The built-ins are written into that folder the first time the app finds it empty, so they are there to edit, rename and copy between devices. Deleting the ones you do not use is permanent — the app does not put them back, and the name row still offers them all.
 
 ### Assigning grooves
 
@@ -999,10 +1055,12 @@ Each track uses groove `00` by default. Use the **GRV XX** phrase effect to swit
 | Input | Action |
 |---|---|
 | D-pad UP/DOWN | Move between rows |
-| A | On a `--` row, add a step at 12 ticks |
-| A + LEFT/RIGHT | Edit tick value |
+| D-pad RIGHT / LEFT | Move into the panel and back |
+| A | On a `--` row, add a step at 12 ticks. On SAVE or LOAD, press the button |
+| A + LEFT/RIGHT | Edit tick value. On the name row, step through the built-in grooves. On QNT, change it |
 | A + UP/DOWN | Edit tick value (large step) |
-| A + B | Clear row |
+| A + B | Clear row. On the name row, back to STRAIGHT |
+| B + UP/DOWN | Set QNT from anywhere on the screen |
 | B + LEFT/RIGHT | Previous / next groove |
 
 ---
@@ -1112,16 +1170,16 @@ Navigate here: **R+UP** from INSTRUMENT (column 3).
 
 | Dest | Affects |
 |---|---|
-| VOLUME | Amplitude |
+| VOL | Amplitude |
 | PAN | Stereo position |
 | PITCH | Pitch in semitones |
 | FINE | Fine pitch (same range as PITCH) |
-| CUTOFF | Filter cutoff |
+| CUT | Filter cutoff |
 | RES | Filter resonance |
-| SMPSTRT | Sample start point |
-| MOD AMT | Depth of the next mod slot |
-| MOD RATE | Speed of the next mod slot |
-| MOD BOTH | Both depth and speed of the next mod slot |
+| STA | Sample start point |
+| MOD A | Depth of the next mod slot |
+| MOD R | Speed of the next mod slot |
+| MOD B | Both depth and speed of the next mod slot |
 
 ### Layout
 
@@ -1136,22 +1194,24 @@ The screen shows two mod slots side by side (MOD1+MOD2, then MOD3+MOD4).
 **LFO parameters:** TYPE, DEST, AMT, OSC, TRIG (trigger mode), FREQ
 
 **LFO trigger modes:**
-- FREE — phase never resets
-- RETRIG — phase resets to 0 on each new note
+- FREE — runs on its own clock and never restarts
+- RETG — starts the wave over on each new note
+- HOLD — takes one value from the clock when the note starts and keeps it for the whole note
+- ONCE — starts over on each new note, plays one cycle and stops there
 
-**LFO shapes:** TRI, SIN, RMP+, RMP−, EXP+, EXP−, SQU+, SQU−, RANDOM, DRUNK
+**LFO shapes:** TRI, SIN, RMP+, RMP−, EXP+, EXP−, SQU+, SQU−, RND (jumps between random values), DRK (wanders)
 
 ### Mod-to-mod routing
 
-When DEST is **MOD AMT**, **MOD RATE**, or **MOD BOTH**, the slot modulates the next slot (circular: slot 4 → slot 1).
+When DEST is **MOD A**, **MOD R**, or **MOD B**, the slot modulates the next slot (circular: slot 4 → slot 1).
 
-Example: MOD1 (LFO) with DEST=MOD AMT targeting MOD2 (AHD) — the LFO rhythmically swells the envelope depth.
+Example: MOD1 (LFO) with DEST=MOD A targeting MOD2 (AHD) — the LFO rhythmically swells the envelope depth.
 
 > [!TIP]
 > Mod-to-mod routing is **circular** — slot 4 targets slot 1. Plan your slot order before setting up complex chains: the modulator should always be a lower-numbered slot than its target, except for the wraparound case.
 
 > [!TIP]
-> **LFO RETRIG** mode resets the phase on every new note, giving a predictable and consistent modulation shape on each hit. Use **FREE** only when you want the LFO to drift independently of your notes — useful for slow pad movement but unpredictable on drums.
+> **LFO RETG** mode resets the phase on every new note, giving a predictable and consistent modulation shape on each hit. Use **FREE** only when you want the LFO to drift independently of your notes — useful for slow pad movement but unpredictable on drums.
 
 ### Controls
 
@@ -1168,26 +1228,32 @@ Example: MOD1 (LFO) with DEST=MOD AMT targeting MOD2 (AHD) — the LFO rhythmica
 
 ## 16. MIXER Screen
 
-The MIXER screen shows all 8 tracks plus a master column with real-time dBFS peak meters. This is where you balance levels, control reverb/delay return volumes, and open per-track EQs.
+The MIXER screen shows all 8 tracks, the two effect returns and the master strip, each with a real-time dBFS peak meter. This is where you balance levels, set how loud the reverb and delay come back, and shape the whole mix.
 
 Navigate here: **R+DOWN** from any Row 2 screen.
 
 ```
-  T0   T1   T2   T3   T4   T5   T6   T7   MST
-  ██   ██   ██   ██   --   --   --   --   ██
-  ██   ██   ██   --                       REV ██
-  ██   --   --                            DEL ██
-  80   80   80   80   80   80   80   80   80
+  T1   T2   T3   T4   T5   T6   T7   T8   MASTER
+  ██   ██   ██   ██   ██   ██   ██   ██    ██
+  FF   FF   FF   FF   FF   FF   FF   FF
+
+  REV  DEL                          MIX  FF
+  ██   ██                           EQ   --
+  80   80                           OTT  00
+                                    LIM  00
 ```
 
-Each track column shows a peak meter and a volume value (`00`–`FF`, `80` = 0 dB / unity).
+Each track strip shows a peak meter and a volume value (`00`–`FF`, `FF` = full level).
 
-The **master column** has two additional rows above the volume:
-- **REV** — return gain for the reverb send bus (`00`–`FF`)
-- **DEL** — return gain for the delay send bus (`00`–`FF`)
+Under the tracks:
+- **REV** and **DEL** — how loud the reverb and delay returns come back into the mix (`00`–`FF`)
+- **MIX** — the master volume
+- **EQ** — the master EQ slot; press A to open the EQ EDITOR
+- **OTT** / **DUST** — depth of the master bus effect chosen on the EFFECTS screen
+- **LIM** — how hard the mix is pushed into the final limiter (`00` = no push)
 
-The master volume is applied to everything below it — the eight tracks **and** the reverb and delay
-returns — so pulling MST down takes the tails with it.
+The master volume is applied to everything — the eight tracks **and** the reverb and delay
+returns — so pulling MIX down takes the tails with it.
 
 Both kinds of fader can also be moved from a phrase while the song plays: `VTR` writes the fader of the
 track it is on, `VMV` writes the master (§21), and `AUS`/`AUF` fade either of them smoothly. The numbers
@@ -1199,8 +1265,8 @@ faders back there.
 | Value | Level |
 |---|---|
 | `00` | Silent |
-| `80` | Unity (0 dB) |
-| `FF` | Maximum (+6 dB) |
+| `80` | About half (−6 dB) |
+| `FF` | Full level (0 dB) — where every fader starts |
 
 ### Meter zones
 
@@ -1216,14 +1282,14 @@ The master column also has stereo send peak meters showing REV and DEL bus level
 > Red meters mean the master limiter is working hard. The output won't clip, but heavy limiting can colour the sound. Lower individual track volumes to give the limiter more headroom.
 
 > [!TIP]
-> Start all tracks at `80` (unity), balance them by ear, then bring the master down if needed. It's easier to level-match tracks at unity than to compensate after boosting everything.
+> Every fader starts at `FF`, which is full level — a fader can only turn a track down, never boost it. Balance by pulling the louder tracks down rather than looking for more on the quiet ones.
 
 ### Controls
 
 | Input | Action |
 |---|---|
 | D-pad LEFT/RIGHT | Select track / column |
-| D-pad UP/DOWN | Move between rows (track volume, or REV/DEL/VOL in master) |
+| D-pad UP/DOWN | Move between rows (track faders, REV/DEL, MIX/EQ/OTT/LIM) |
 | A + LEFT/RIGHT | Increase / decrease value by 1 |
 | A + UP/DOWN | Increase / decrease value by 16 |
 | A (on the master EQ cell) | Open EQ EDITOR. A + LEFT/RIGHT picks the EQ slot. |
@@ -1240,15 +1306,13 @@ Navigate here: **R+DOWN** from MIXER, or **R+DOWN** twice from any Row 2 screen.
 
 | Parameter | Description |
 |---|---|
-| TYPE | A starting point for the whole section: **NORMAL** (the plain reverb), **ROOM** (tight, bright, close), **HALL** (a gap, then a long dark tail), **CAVE** (longest, darkest, widest). Choosing one sets every cell in the section together — including DCAY and DENS, which only MVERB shows; turn any of them afterwards and TYPE reads **USER**. |
-| ALGO | Which reverb runs: **OLD**, an even wash, or **MVERB**, a denser tail with audible early reflections. Switching leaves every cell exactly as you set it — but SIZE and MOD mean different things to each, so the same numbers sound different, and MVERB shows two extra cells the old reverb has no counterpart for. Switching back returns the sound you had. |
-| PRE | Pre-delay (`00`–`FF`) — a gap of up to 150 ms before the tail starts, so the sound stays in front of it. `00` starts it immediately. Same on both algorithms. |
-| SIZE | On **OLD**, the length of the tail (`00`–`FF`), about half a second to about twenty-five; `FF` never ends. On **MVERB**, the size of the *room* — how far apart its walls are — while DCAY below sets how long it rings. The level stays where it is as you turn it. |
-| WIDE | Stereo width of the return (`00`–`FF`). `00` is mono, `80` leaves the image as the reverb makes it, `FF` pushes it to the sides. The level does not change with it. Same on both algorithms. |
-| DAMP | Brightness of the tail (`00`–`FF`). `00` is dark, `FF` keeps the highs. Same on both algorithms. |
-| DCAY | **MVERB only**, and not shown on OLD. How long the tail rings (`00`–`FF`), separate from the room — so a small room can ring for a long time, or a big one die away fast. About half a second to about four; `FF` never ends. |
-| DENS | **MVERB only**, and not shown on OLD. How thick the reverb is (`00`–`FF`). Low is sparse and grainy, with the individual echoes audible; high smears them into a smooth wash. |
-| MOD / EARLY | On **OLD** it is labelled MOD and is movement in the tail (`00`–`FF`) — higher makes it drift in pitch, `00` holds it still, which is bright and metallic. On **MVERB** it is labelled EARLY and is how much of the early reflections you hear: `00` is the tail alone, `FF` is mostly the sound of the walls. |
+| TYPE | A starting point for the whole section: **NORMAL** (the plain reverb), **ROOM** (tight, bright, close), **HALL** (a gap, then a long dark tail), **CAVE** (longest, darkest, widest). Choosing one sets SIZE, DCAY, DAMP, PRE, WIDE and MOD together; turn any of those afterwards and TYPE reads **USER**. |
+| PRE | Pre-delay (`00`–`FF`) — a gap of up to 150 ms before the tail starts, so the sound stays in front of it. `00` starts it immediately. |
+| SIZE | Size of the room (`00`–`FF`) — how far apart its walls are. A bigger room also makes the movement from MOD slower. It does not change how long the tail rings or how loud it is. |
+| DCAY | Length of the reverb tail (`00`–`FF`), from about half a second to about twenty-five, whatever the room. `FF` is a tail that never ends. The level stays where it is as you turn it. |
+| WIDE | Stereo width of the return (`00`–`FF`). `00` is mono, `80` leaves the image as the reverb makes it, `FF` pushes it to the sides. The level does not change with it. |
+| DAMP | Brightness of the tail (`00`–`FF`). `00` is dark, `FF` keeps the highs. |
+| MOD | Movement in the tail (`00`–`FF`). Higher makes the tail drift in pitch; `00` holds it still, which is bright and metallic. |
 | EQ | Press A to open the EQ EDITOR for the reverb return. |
 
 The reverb return volume is set on the MIXER screen (REV row in master column).
@@ -1259,9 +1323,9 @@ The reverb return volume is set on the MIXER screen (REV row in master column).
 |---|---|
 | TYPE | A starting point for the three character cells: **NORMAL** (the plain delay), **PING** (bouncing), **TAPE** (dark, drifting repeats). Choosing one sets PONG, TONE and WOBL together; turn any of those afterwards and TYPE reads **USER**. |
 | PONG | Repeats alternate left and right instead of echoing on their own side (`ON` / `OFF`). |
-| TIME | Delay time. **SYNC off:** free time `00`–`FF` = 0–2000 ms. **SYNC on:** `00`–`0B` selects a BPM-locked subdivision (1/1 … 1/16.). Press **B** on this row to switch between the two. |
+| TIME | Delay time. **SYNC off:** free time `00`–`FF` spans 0 to about 2 seconds. **SYNC on:** `00`–`0B` selects a BPM-locked subdivision (1/1 … 1/16.). Press **B** on this row to switch between the two. Changing it while the delay is sounding slides the repeats into the new time and bends their pitch on the way, the way a tape delay does; `TIM` (§22) writes the same time from a phrase or a table. |
 | TONE | How bright the repeats stay (`00`–`FF`). Lower darkens each repeat more than the one before it; `FF` leaves them untouched. |
-| FDBK | Feedback amount (`00`–`FF`). Higher = more repeats. |
+| FDBK | Feedback amount (`00`–`FF`). Higher = more repeats. From about `E0` the repeats stop fading and the delay begins to sing: around `F0` they hang almost forever, and above it they bloom into a steady tone that keeps going after the input stops. Turn WOBL up to make that tone drift. |
 | WOBL | How far the tape speed drifts (`00`–`FF`), bending the pitch of the repeats. `00` holds them steady. |
 | REV | Amount of delay output sent into the reverb bus (`00`–`FF`). Delay is processed before reverb, so this cross-routing is zero-latency. |
 | EQ | Press A to open the EQ EDITOR for the delay return. |
@@ -1276,7 +1340,7 @@ The delay return volume is set on the MIXER screen (DEL row in master column).
 > Setting **Delay REV** above `00` feeds the delay output into the reverb — this creates a "delay into reverb" effect popular in ambient, dub, and post-rock music. Start around `40` and adjust to taste.
 
 > [!WARNING]
-> **FDBK** values near `FF` create near-infinite delay tails that can clip the output. Start around `60`–`80` and increase carefully while listening to the master meter.
+> **FDBK** values near `FF` make the delay self-oscillate: the tone holds at a steady level of its own and does not stop when you stop playing. Pull FDBK back below `E0` to end it. Start around `60`–`80` and increase carefully while listening to the master meter.
 
 ### Master bus
 
@@ -1316,13 +1380,12 @@ Each band has 4 parameters: TYPE, FREQ, GAIN, Q.
 
 | Type | Description |
 |---|---|
-| PEAK | Boost or cut at FREQ with width Q |
-| LOW SHELF | Shelving EQ below FREQ |
-| HIGH SHELF | Shelving EQ above FREQ |
-| LP | Low-pass filter at FREQ |
-| HP | High-pass filter at FREQ |
-| NOTCH | Notch (band-reject) at FREQ |
 | OFF | Bypass this band |
+| LOSHELF | Lift or cut everything below FREQ |
+| LOWCUT | Remove everything below FREQ (high-pass) |
+| BELL | Lift or cut around FREQ, as wide as Q |
+| HISHELF | Lift or cut everything above FREQ |
+| HICUT | Remove everything above FREQ (low-pass) |
 
 ### Controls
 
@@ -1360,13 +1423,41 @@ Navigate here: **R+UP** from SONG or CHAIN.
 |---|---|
 | SAVE | Save project to `.ptp` file (press A to confirm). |
 | LOAD | Open file browser to load a project. |
-| EXPORT — MIX | Render the full song to a stereo WAV (offline, faster than real-time). |
-| EXPORT — STEMS | Render each active track to its own stereo WAV stem, plus reverb and delay send returns. |
+| EXPORT — MIX | Open the RENDER panel, set to a stereo WAV (offline, faster than real-time). |
+| EXPORT — STEMS | Open the RENDER panel, set to one stereo WAV stem per active track, plus reverb and delay send returns. |
 | CLEAN SEQ | Remove unused chains and phrases (with confirmation dialog). |
 | CLEAN INST | Remove unused instruments (with confirmation dialog). |
 | SETTINGS | Open the SETTINGS screen (press A). |
 
 WAV exports are saved to `<home>/Renders/` — `<home>` being PocketTracker's home folder (section 2) — with auto-incremented filenames (`ProjectName_0001.wav`). Stems are written to a per-project subfolder — `Renders/ProjectName/ProjectName_1.wav`, `_2.wav`, … — plus `_reverb.wav` / `_delay.wav` when those sends are in use.
+
+### The RENDER panel
+
+Either EXPORT button opens the same panel; which one you pressed is what decides whether you get a
+stereo mix or a set of stems.
+
+| Row | What it does |
+|---|---|
+| SONG START | The first song row of the export. |
+| SONG END | The last song row, or **AUTO** — run to the end of the part SONG START is in. A+LEFT below SONG START's number returns to AUTO. |
+| REPEAT | How many times the chosen rows are played into the file, `x2`–`x16`, or **OFF** for once. A+LEFT below `x2` returns to OFF. |
+| RENDER | Press **A** to write the file. The percentage appears on this row while it runs. |
+
+| Control | Action |
+|---|---|
+| D-pad UP/DOWN | Move between rows |
+| A + LEFT/RIGHT | Change the value by one |
+| A + UP/DOWN | Change SONG START / SONG END by 16 rows |
+| R + UP/DOWN | Move the whole range to the previous or next part of the song |
+| B | Close the panel |
+
+A **part** is a run of song rows with a fully empty row above and below it — the same blocks playback
+loops (section 6). Since each part loops on its own, a project can hold several unrelated sketches;
+this panel is how you export one of them without the others.
+
+> [!TIP]
+> REPEAT plays the rows through again in a single pass rather than joining several files, so the
+> reverb tail, the delay repeats and any tables carry across each repeat with no seam.
 
 > [!WARNING]
 > **CLEAN SEQ** and **CLEAN INST** are **permanent** — there is no undo. Save your project before running them, in case you remove something you still needed.
@@ -1384,8 +1475,9 @@ All value rows are edited with **A + D-pad**. A single **A** press is reserved f
 
 | Setting | Options | Description |
 |---|---|---|
-| LAYOUT | PORTRAIT (+ SKIN) | On a touchscreen device the app lays itself out as the portrait device skin, and the row's real control is the **SKIN** column beside it: **NORM** (beige casing, dark labels) or **DARK** (slate casing, white labels). PocketTracker picks portrait, landscape or fullscreen for you from the screen shape and from whether it finds physical buttons; a mode column appears only on a device that has both a touchscreen and a controller (see below). |
+| LAYOUT | PORTRAIT (+ SKIN) | On a touchscreen device the app lays itself out as the portrait device skin, and the row's real control is the **SKIN** column beside it: **NORM** (beige casing, dark labels), **DARK** (slate casing, white labels) or **TRNS** (no casing at all — see-through keys and labels drawn in your theme's colours, with the tracker across the full width of the screen). PocketTracker picks portrait, landscape or fullscreen for you from the screen shape and from whether it finds physical buttons; a mode column appears only on a device that has both a touchscreen and a controller (see below). |
 | SCALING | INT / BILINEAR | Screen scaling algorithm. INT = crisp pixel-perfect integer scaling. BILINEAR = smooth subpixel scaling. |
+| AUDIO OUT | SYSTEM / an ASIO driver | **Windows only.** Where the sound goes. **SYSTEM** plays through Windows' own output. Picking an installed ASIO driver (your audio interface's, or ASIO4ALL) plays straight to it, with much less delay between a press and the sound. The switch happens at once; the buffer size is set in the driver's own control panel. A driver usually takes the interface for itself, so other programs may go quiet on it while PocketTracker plays. If the driver cannot be opened — another program holds it, or the interface is unplugged — the app keeps playing through the previous output and says why. Unplugged while playing, it moves to **SYSTEM** (AUDIO OUT LOST) and goes back to the interface when it is plugged in again. |
 | BTN SOUND | ON / OFF (+ VOL) | Play a click sound on button press. The **VOL** sub-column to its right sets click volume (`00`–`FF`). |
 | BTN VIBRO | ON / OFF (+ POW) | Haptic feedback on button press (where supported). The **POW** sub-column to its right sets vibration intensity (`00`–`FF`). |
 | METRONOME | ON / OFF (+ VOL) | A click on every beat — one per four phrase steps — for as long as the song is playing, with an accent on the first beat of each bar. The **VOL** sub-column sets how loud it is (`00`–`FF`). You hear it while you work; it is never written into an exported WAV. |
@@ -1395,6 +1487,7 @@ All value rows are edited with **A + D-pad**. A single **A** press is reserved f
 | FOLDER | REMEMBER / REFRESH | With REMEMBER, a sample load reopens at the folder you last loaded a sample from, for as long as the app is running. With REFRESH it always starts at the default (or at whatever `config.json` names — see section 26). |
 | NOTE PREV | ON / OFF | On the PHRASE screen, play the note under the cursor for as long as you hold **A** — when you insert it, change it with A + D-pad, or just hold A on it. Not in selection mode. |
 | VISUALIZER | SCOPE / FLAT / OCTA / OCTA.F / SPECT / SPCT.P | Visualizer mode for the top bar (see §3 for descriptions). |
+| HELP | OFF / SHORT / FULL | What a tap of **SELECT** shows: nothing, three lines in the visualizer strip, or a full help screen (see §5.2, *Help on SELECT*). |
 | THEME | theme name > | Shows the current theme name. Press A to open the THEME EDITOR. |
 | TEMPLATE | SAVE / CLEAR | SAVE stores the current project as a template for new projects. CLEAR removes the saved template. |
 | ABXY | AUTO / XBOX / NINTENDO | Which face button your controller has **printed** A. Appears only while a controller is attached. **AUTO** trusts the controller and is right for a handheld's built-in pad and for a real Switch pad. Use **NINTENDO** if A is the right-hand button but the app reads it as B - common with 8BitDo pads in XInput mode, which report themselves as Xbox controllers. **XBOX** = A is the bottom button. Keyboard keys are never affected. |
@@ -1440,22 +1533,20 @@ The top row lets you cycle through built-in themes and save or load custom theme
 
 Move between positions with D-pad LEFT/RIGHT.
 
-### Rows 1–22 — Color parameters
+### Rows 1–19 — Color parameters
 
 Each row edits one color in the theme. The color preview swatch is shown on the right. Cursor moves between **R**, **G**, **B** channels with D-pad LEFT/RIGHT.
 
 | Label | What it colors |
 |---|---|
-| BACKGROUND | Module fill and default row background |
-| ROW 4TH | Beat-accent rows (every 4th step) |
-| ROW CURSOR | The cell the cursor is on in a grid (SONG, CHAIN, PHRASE, TABLE, GROOVE); the whole row on list screens such as SETTINGS |
+| BACKGROUND | Module fill and default row background; also the text inside the cursor's block |
+| ROW 4TH | Beat-accent rows (every 4th step); also the text inside a selected cell |
+| ROW CURSOR | The palette's accent. The block behind the cell the cursor is on (or the whole row on list screens such as SETTINGS), every row number and column heading that marks where the cursor is, the EQ EDITOR's response curve, and the frame around a selected mixer meter |
 | ROW SELECT | The selected cells during copy/paste |
 | TXT TITLE | Screen header text (e.g., "PHRASE", "INSTRUMENT") |
 | TXT PARAM | Inactive parameter labels |
 | TXT VALUE | Inactive parameter values |
-| TXT CURSOR | Text under the cursor, and the row number and column heading that mark where it is |
 | TXT EMPTY | Empty / placeholder cells |
-| TXT SELECT | Text in the selected cells |
 | TXT PLAY | The `>` playback marker |
 | VIZ BG | Visualizer background |
 | VIZ LINE | Visualizer center line |
@@ -1464,12 +1555,11 @@ Each row edits one color in the theme. The color preview swatch is shown on the 
 | MTR LOW | Meter green zone (below −6 dBFS) |
 | MTR MID | Meter yellow zone (−6 to 0 dBFS) |
 | MTR HIGH | Meter red zone (≥ 0 dBFS) |
-| EQ BG | EQ EDITOR spectrum panel background |
 | EQ FILL | Shading under the EQ EDITOR's spectrum curve |
-| EQ BORDER | The EQ EDITOR's spectrum curve itself |
+| EQ BORDER | The EQ EDITOR's spectrum outline and its 0 dB line |
 | EQ TXT | Frequency labels on the EQ EDITOR's spectrum |
 
-A theme file saved before these rows existed loads with them set to what the screen drew previously — the EQ rows from the theme's own colors, TXT SELECT from VIZ WAVE, TXT PLAY from the marker color that theme already showed — so an older `.ptt` looks unchanged until you edit them.
+ROW CURSOR and ROW SELECT are the two blocks text is read *against*, so pick them bright enough for BACKGROUND and ROW 4TH to show up on them. A theme file saved by an older version still loads, and keeps every color it named; the three rows that are no longer listed are simply not drawn any more.
 
 ### Controls
 
@@ -1534,15 +1624,27 @@ Persists across steps. Configure with **ARC**.
 
 ### CHA `XY` — Chance
 
-Probability gate. Rolls a random number each time the step plays.
+Rolls the dice each time the step plays — once for each side of the `CHA` cell:
 
-- `X` (high nibble) = probability (`0`=never, `F`=always)
-- `Y` (low nibble) = target: `0`=note, `1`=FX1, `2`=FX2, `3`=FX3
+- `X` = the chance of its nearest neighbour on the **left**: the nearest filled FX column, or the
+  note when every column to its left is empty
+- `Y` = the chance of its nearest neighbour on the **right**: the nearest filled FX column after it
 
-CHA can appear in any FX column and gates any specific target independently of its own position.
+Empty columns are skipped, and only that one neighbour is gated on each side. `0` = never, `F` =
+always, `8` ≈ half. Write `F` for a side you do not want gated.
 
-> [!TIP]
-> `CHA 82` anywhere on the step = ~53% chance FX2 fires. `CHA 40` = ~25% chance the note plays at all. Mix multiple CHA slots to gate different targets with different probabilities.
+```
+    00    C-4 00  CHA 4F  PIT 05             ← the note about 1 time in 4; PIT whenever it plays
+    04    C-4 00  LPF 40  CHA 8F             ← the note always; its LPF about half the time
+    08    C-4 00  LPF 40  CHA F8  AUS 80     ← note and LPF always; the filter sweep about half the time
+    0C    C-4 00  ---     CHA 8F             ← FX1 empty: the note itself about half the time
+```
+
+`AUS` looks past a `CHA` for the effect it fades, so a `CHA` between them decides whether the fade
+happens at all — on that step and for the whole of the fade.
+
+It works on a **table row** too, rolled each time the row plays; there, with nothing filled to its
+left, `X` gates the row's N and V columns.
 
 ---
 
@@ -1560,12 +1662,17 @@ Switches the current track to use groove `XX` from this step onward.
 
 ### HOP `XY` — Hop / Jump
 
-- In a **phrase**: ends the phrase at this step; the **next** phrase starts at row `Y` (`X` is ignored).
+- In a **phrase**: the row is **not played** — no note, no effects, no time. The phrase ends here and the **next** phrase starts at row `Y` (`X` is ignored). A note typed on the same row will not sound; put it on the row above, which costs a row and no time.
 - In a **table**: jumps **its own FX column's** playhead to table row `Y`, `X` times before falling through (`X` = 0: forever).
 - `HOP FF` in a **phrase**: **stops the track** — in SONG mode until the next song row; in PHRASE/CHAIN playback the track stays silent until you stop.
 - `HOP FF` in a **table**: stops **that FX column** only. The table ends when all three have stopped.
 
 `HOP 00` at the end of a section = infinite loop of that section.
+
+A `HOP` row costs no time in either place, so a four-row loop lasts exactly four rows.
+
+> [!NOTE]
+> In **PHRASE** playback there is no next phrase — the same one repeats — so a `HOP` there loops back into the phrase you are previewing rather than moving on. Play the chain or the song to hear what it will really do. A phrase whose first row is a `HOP` has nothing to play at all, and falls silent.
 
 ---
 
@@ -1652,15 +1759,29 @@ Persists across steps. Cancel with new note, new FX in same column, or KIL.
 
 ### RND `XY` — Randomize
 
-Randomizes the **previously active FX** value on this track.
+Plays the last effect written higher up in the same FX column again, with a random amount from `00`
+to `XY` added to its value. `00` adds nothing; the value never goes past `FF`.
 
-- `X` = downward range, `Y` = upward range
+```
+    00    C-4 00  VOL 80
+    04    C-4 00  RND 10               ← VOL 80 to VOL 90
+```
+
+It works on a **table row** too, re-playing the nearest effect above it in its column — with `TIC 00`,
+a new roll on every note.
 
 ---
 
 ### RNL `XY` — Randomize Left
 
-Randomizes the FX value in the column immediately to the left. Same `X`/`Y` semantics as RND.
+Adds a random amount from `00` to `XY` to the effect in the column to its left.
+
+In the first FX column there is no effect to its left, so it randomizes the note and the instrument
+instead: the note goes up by `0` to `X` semitones, and the instrument number goes up by `0` to `Y`.
+`C-4 04 RNL 53` plays anything from C-4 to F-4, on instrument 04 to 07.
+
+It works on a **table row** too, rolled each time the row plays — in FX2 or FX3; in a table's FX1 it does
+nothing.
 
 ---
 
@@ -1718,7 +1839,8 @@ Sets the step volume to `XX` at the exact tick this command fires. Useful in tab
 
 Overrides the stereo pan for **this note only**. `00` = hard left, `80` = center, `FF` = hard right. The
 next note on the track (without a PAN) reverts to the pan set on the INSTRUMENT screen. On an empty step it
-moves the currently-playing voice.
+moves the currently-playing voice. On a **table row** it moves the note each time the row plays, so a
+column of PAN values is an auto-pan.
 
 ---
 
@@ -1790,6 +1912,27 @@ It belongs to no track, so it works from any of them: a `VMV` on track 8 fades t
 
 ---
 
+### TIM `XX` — Delay Time
+
+Sets the shared delay's **echo time** to `XX` (`00`–`FF` = 0 to 2 seconds) — the same range the DELAY
+screen's `TIME` dial covers in free mode.
+
+`XX` always means that free range, **even when the DELAY screen is set to SYNC**: the twelve tempo
+divisions are a list rather than a scale, and a fade needs a scale to slide through. A `TIM` therefore
+takes the delay off the tempo grid until the next one.
+
+Like `VTR` and `VMV` it belongs to no track, works from any of them, persists until the next `TIM`, and
+is restored when playback stops.
+
+The delay's read head **glides** to a new time rather than jumping to it, and a moving head plays the
+repeats back at a different speed — so the echoes bend in pitch on the way, the way a tape delay does.
+A `TIM` under `AUS`/`AUF` is a long tape swoop; a single `TIM` is a shorter one.
+
+It also works on a **table** row, where it fires once per tick — that is where the fastest and finest
+bends are written.
+
+---
+
 ### AUS `XX` — Automation Start · AUF `XX` — Automation Finish
 
 `AUS` and `AUF` are a **pair**, and together they fade a parameter smoothly from one value to another
@@ -1826,6 +1969,7 @@ skipping any that are not:
 | `DEL` | the delay send |
 | `VTR` | this track's fader |
 | `VMV` | the master fader |
+| `TIM` | the delay time — the repeats bend in pitch as it moves |
 | `CUT` | the filter cutoff |
 | `RES` | the filter resonance |
 | `LPF` `HPF` `BPF` | the cutoff of the filter they switch on |
@@ -2007,6 +2151,34 @@ instrument still, set `TSP` to `OFF` on the INSTRUMENT screen instead (§10); th
 
 ---
 
+### INS `XX` — Instrument
+
+The note on this step plays instrument `XX` instead of the one in its `I` column. `00`–`7F`.
+
+Put `RNL` to its right, or an `RND` further down the same FX column, and each note picks an instrument
+at random, counting up from the one `INS` names.
+
+```
+    00    C-4 00  INS 04  RNL 03       ← instrument 04, 05, 06 or 07, a new pick every pass
+    04    C-4 00  INS 08               ← always instrument 08
+```
+
+It needs a note on the same step.
+
+`INS` works on a **table row** too, where it hands the note on instead: the note passes through the
+table as far as the row carrying `INS`, leaves there, and plays on that instrument — which brings its
+own table, so one `INS` can lead to another. Everything to the left of the `INS` on that row still
+shapes the note; anything to its right is not read. A row with no `INS` plays your own instrument,
+with that row's transpose, volume and effects as usual.
+
+With `TIC 00` the table reads one row per note, so a column of `INS` cells rotates through
+instruments — a new one each time the note retriggers. `HOP` on the same FX column loops that
+rotation. At any other tic rate the row read is always row 0.
+
+An `INS` naming an empty instrument is silent, rather than falling back to the instrument you played.
+
+---
+
 ### SCA `XY` — Track Scale · SCG `XY` — Global Scale
 
 Put a track on one of the project's 16 scales. `SCA` moves the track the command is written on; `SCG`
@@ -2137,7 +2309,7 @@ Two details worth knowing:
 
 - Format: `.wav` (8/16/24/32-bit PCM or float; mono or stereo)
 - Stereo WAV files are supported natively — SOURCE mode on the instrument or sample editor selects LEFT / RIGHT / STEREO / MONO non-destructively
-- Sample rates: any — PocketTracker compensates pitch for non-44100 Hz files automatically
+- Sample rates: any — PocketTracker compensates the pitch of a file recorded at a different rate automatically
 - Loaded via: INSTRUMENT screen → **TYPE** row → **LOAD** → **A** → file browser
 - SF2 and SF3 files are loaded the same way
 - **Compressed audio** (`.mp3`, `.flac`, `.ogg`, `.opus`, `.m4a`) loads directly as a sample — decoded into memory with **no WAV file written** and no slice markers. The instrument remembers the original file path, so it is re-decoded automatically each time the project is reopened. FLAC is lossless, so it is the best choice when you want a small file with no quality loss. (`.opus` and `.m4a` are common voice-recording formats — phone memos, messaging-app exports.)
@@ -2167,7 +2339,7 @@ sample — handy for grabbing a sound straight from a clip without a separate co
 
 ### WAV exports
 
-- Format: 16-bit stereo WAV, 44100 Hz
+- Format: 16-bit stereo WAV, at the rate your device runs (48000 Hz on most hardware)
 - Location: `<home>/Renders/`
 - Filenames: `ProjectName_0001.wav`, `_0002.wav`, … (auto-incremented)
 - Triggered from: PROJECT screen → EXPORT → MIX
@@ -2594,9 +2766,8 @@ exports and sample-editor saves keep their own folders.
 |---|---|
 | R + UP / DOWN | Zoom in / out, from any row |
 | A + LEFT / RIGHT | Zoom in / out (cursor on the ZOOM cell) |
-| D-pad LEFT / RIGHT | Scroll (when zoomed) |
-| D-pad (on marker row) | Move selection marker |
-| A + D-pad (on slice position) | Move the boundary — UP/DOWN fine, LEFT/RIGHT coarse |
+| A + D-pad (on START / END) | Move the selection marker — LEFT/RIGHT fine, UP/DOWN coarse |
+| A + D-pad (on slice position) | Move the boundary — LEFT/RIGHT fine, UP/DOWN coarse |
 | A + B (on slice row) | Delete the boundary (MANUAL), or reset it (TRANSIENT / DIVIDE) |
 | A (on slice row, while playing) | Cut a boundary at the playhead (MANUAL) |
 | A (on EQ-effect slot) | Open EQ EDITOR |
@@ -2621,9 +2792,12 @@ exports and sample-editor saves keep their own folders.
 | Input | Action |
 |---|---|
 | D-pad UP / DOWN | Move between rows |
-| A + LEFT / RIGHT | Edit tick value |
+| D-pad RIGHT / LEFT | Move into the panel and back |
+| A | SAVE / LOAD, or add a step on a `--` row |
+| A + LEFT / RIGHT | Edit tick value, pick a built-in groove, or set QNT |
 | A + UP / DOWN | Large step |
-| A + B | Clear row |
+| A + B | Clear row, or back to STRAIGHT |
+| B + UP / DOWN | Set QNT |
 | B + LEFT / RIGHT | Previous / next groove |
 
 ---
@@ -2686,7 +2860,7 @@ Open with **A** on an EQ cell.
 |---|---|---|---|
 | ARP | Arpeggio | `XY` = intervals | Persists — cancel with `ARP 00` |
 | ARC | Arpeggio Config | `XY` | High nibble=mode (0=UP 1=DN 2=PP 3=RND), low=speed |
-| CHA | Chance | `XY` | X=probability (0=never F=always), Y=target (0=note 1=FX1 2=FX2 3=FX3) |
+| CHA | Chance | `XY` | X = chance of the nearest filled FX to its left (or the note), Y = to its right (0=never F=always) |
 | LAT | Latency | `XX` ticks | Delays row trigger |
 | GRV | Groove | `XX` | Assigns groove to this track |
 | HOP | Hop/Jump | `XY` | Phrase: next phrase starts at row Y (FF=stop track). Table: jump to row Y, X times (0=forever) |
@@ -2698,8 +2872,8 @@ Open with **A** on an EQ cell.
 | PVB | Vibrato | `XY` | X=speed, Y=depth — **persists** |
 | PVX | Extreme Vibrato | `XY` | 4× deeper, 2× faster than PVB |
 | RPT | Repeat/Retrigger | `XY` | Y=0: every X ticks; Y≠0: fade — **persists** |
-| RND | Randomize | `XY` | Randomizes previous FX value |
-| RNL | Randomize Left | `XY` | Randomizes FX in column to the left |
+| RND | Randomize | `XY` | Adds `00`–`XY` at random to the last FX above it in the column |
+| RNL | Randomize Left | `XY` | Adds `00`–`XY` at random to the FX on its left; in FX1, `X` = note, `Y` = instrument |
 | SLI | Slice Index | `XX` | Direct slice selection |
 | TBL | Table Set | `XX` | Override instrument's table |
 | THO | Table Hop | `XX` | Jump table to row 0X |
@@ -2713,6 +2887,7 @@ Open with **A** on an EQ cell.
 | EQM | EQ (mixer) | `XX` | Master EQ preset slot; holds till next EQM, resets on stop |
 | VTR | Track Fader | `XX` | This track's MIXER fader; replaces it, **persists**, restored on stop |
 | VMV | Master Fader | `XX` | The master fader, from any track; replaces it, **persists**, restored on stop |
+| TIM | Delay Time | `XX` | The delay's echo time (00–FF = 0–2 s), from any track; the repeats bend in pitch as it moves. Replaces the DELAY screen's time, **persists**, restored on stop |
 | AUS | Automation Start | `XX` = curve | Fades the automatable effect to its LEFT (00=ease-in 80=linear FF=ease-out) |
 | AUF | Automation Finish | `XX` | Destination value; a later step, may be a later phrase of the same chain |
 | CUT | Filter Cutoff | `XX` | This note's filter cutoff (20 Hz–20 kHz, log). Needs a FILTER TYPE on the instrument |
@@ -2724,6 +2899,7 @@ Open with **A** on an EQ cell.
 | CRU | Crush + Downsample | `XY` | `X` = bits crushed, `Y` = rate drop; both `0` = clean |
 | FIN | Fine Tune | `XX` | `80` in tune, a semitone either way; retunes a note already playing |
 | TSX | Transpose Multiplier | `XX` | How far TSP moves this note: `01` normal, `00` not at all, `FF` the other way. Phrase only |
+| INS | Instrument | `XX` | This note plays instrument `XX` (00–7F); randomize it with RND or RNL. On a table row it hands the note on to that instrument and its table |
 | SCA | Track Scale | `XY` | Puts this track on scale `Y` in key `X` (`0`=C … `B`=B); resets on stop |
 | SCG | Global Scale | `XY` | The same for all eight tracks |
 
@@ -2746,7 +2922,7 @@ Note offsets:  C   C#  D   D#  E   F   F#  G   G#  A   A#  B
 ```
 
 - **Middle C** = `C-4` = MIDI 60
-- **VOL/PAN center** = `80` (unity / center pan)
+- **Full volume** = `FF` · **PAN center** = `80`
 - **+1 octave** = +12 semitones = `0C`
 - **+1 perfect fifth** = +7 semitones = `07`
 

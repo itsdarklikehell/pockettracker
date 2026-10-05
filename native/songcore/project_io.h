@@ -3,40 +3,30 @@
 
 // ─── .ptp / .pti reader + writer + migrate/normalize ────────────────────────────────────────────
 //
-// Reads with nlohmann/json (tolerant of unknown keys and of any whitespace); writes with a
-// hand-rolled MINIFIED emitter. Both directions are proven by tools/ptroundtrip against the golden
-// projects in tools/testdata.
+// Reads with nlohmann/json (tolerant of unknown keys and whitespace); writes with a hand-rolled
+// MINIFIED emitter — autosave rewrites the whole file every 3 s, and layout was 82 % of it (flash
+// wear). Every reader sees the same keys, order and omission rules either way.
 //
-// ⚠️ THE WRITTEN FORM IS MINIFIED; THE SCHEMA IS NOT NEGOTIABLE. Layout was 82 % of a .ptp, and
-// autosave rewrites the whole file every 3 s — 443 KB → 78 KB is flash wear, on a device whose
-// storage is the part that wears out. Everything a reader can observe is unchanged: the same keys,
-// in the same order, with the same omission rules. ⚠️ Any project a user already has still loads —
-// the emitter is the only thing that changed, and no reader here has ever cared about layout.
-// (JsonWriter still pretty-prints on request, and theme_io.h asks; see JsonLayout for why.)
+// ⚠️ The golden .ptp files the tests load are pretty-printed by the ORIGINAL implementation and must
+// stay that way: regenerating them from this emitter would certify whatever it does. ptroundtrip
+// compares parsed DOMs key by key, in order.
 //
-// ⚠️ THE GOLDENS ARE STILL kotlinx's PRETTY-PRINTED BYTES AND MUST STAY THAT WAY. They are the one
-// artifact in this tree written by an implementation that no longer exists, which is the only reason
-// they can catch a schema drift in ours; regenerating them from this emitter would certify whatever
-// it currently does. ptroundtrip compares the parsed DOMs — key for key, in order — so the goldens
-// keep pinning everything except the layout that was deliberately dropped.
-//
-// The output contract (inherited from kotlinx, verified against the golden .ptp files):
-//   * encodeDefaults = FALSE; unknown keys ignored on read.
-//   * `{"key":value,...}` — no spaces, no newlines, none needed anywhere.
-//     Empty object = "{}", empty array = "[]"; no trailing newline.
-//   * Keys emitted in @Serializable DECLARATION order.
-//   * encodeDefaults=false omission, with kotlinx's value-vs-default comparison semantics:
-//       - scalar / String / enum / Note / SFOverrides / List : omit when == the FIELD default
-//         (List default is the empty list → omit when empty).
-//       - Array / IntArray fields : ALWAYS emitted (kotlinx compares arrays by reference, so a
-//         freshly-built default array is never "equal" to the instance → never omitted).
-//       - nullable `= null` fields : omit when null.
-//       - fields with NO default (ids, Note.pitch/octave, InstrumentPreset.instrument) : always.
-//   * enums serialise by entry NAME; every number is an integer (no floats in this schema).
+// The output contract:
+//   * `{"key":value,...}`, no whitespace; "{}" / "[]" when empty; no trailing newline.
+//   * Keys in DECLARATION order (model.h). Unknown keys are ignored on read.
+//   * Defaults are omitted:
+//       - scalar / string / enum / Note / SFOverrides / list : omitted when == the FIELD default
+//         (a list's default is empty);
+//       - fixed-size arrays : ALWAYS emitted;
+//       - nullable fields : omitted when null;
+//       - fields with no default (ids, Note.pitch/octave, InstrumentPreset.instrument) : always.
+//   * Enums by entry NAME; every number an integer.
 
+#include "midi_map.h"
 #include "model.h"
 #include "../vendor/nlohmann/json.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <optional>
@@ -46,7 +36,7 @@ namespace songcore {
 
 using nlohmann::json;
 
-// ─── parse helpers (missing / wrong-typed key → supplied default, mirroring kotlinx) ────────────
+// ─── parse helpers (missing / wrong-typed key → the supplied default) ──────────────────────────
 
 namespace detail {
 
@@ -66,7 +56,7 @@ inline std::string get_str(const json& j, const char* k, const std::string& def)
     auto it = j.find(k);
     return (it != j.end() && it->is_string()) ? it->get<std::string>() : def;
 }
-// nullable string: absent OR json null → nullopt; string → value (matches kotlinx String? = null).
+// Nullable string: absent or json null → nullopt.
 inline std::optional<std::string> get_opt_str(const json& j, const char* k) {
     auto it = j.find(k);
     if (it != j.end() && it->is_string()) return it->get<std::string>();
@@ -115,12 +105,9 @@ inline Chain parse_chain(const json& j, int index) {
     Chain c(get_int(j, "id", index));
     c.phraseRefs      = parse_int_array(j, "phraseRefs",      c.phraseRefs);
     c.transposeValues = parse_int_array(j, "transposeValues", c.transposeValues);
-    // ⚠️ A chain has exactly CHAIN_ROWS rows, and the CHAIN editor indexes both arrays directly with
-    // a cursor row. `parse_int_array` returns whatever length the JSON held, and `normalize_project`
-    // repairs pool sizes rather than the arrays inside a Chain — so a hand-edited or half-written
-    // file could hand the editor a three-element array. Brought back to shape here, at the one place
-    // a Chain enters the program. (The scheduler does not rely on this: `chain_phrase_ref` bounds
-    // itself, because a Chain also reaches it from a test fixture that never parsed anything.)
+    // ⚠️ The CHAIN editor indexes both arrays by cursor row, and a hand-edited or half-written file
+    // can hold a shorter array (normalize_project fixes pool sizes, not arrays inside a Chain), so
+    // they are brought to CHAIN_ROWS here. `chain_phrase_ref` bounds itself independently.
     c.phraseRefs.resize(CHAIN_ROWS, -1);
     c.transposeValues.resize(CHAIN_ROWS, 0);
     return c;
@@ -165,7 +152,10 @@ inline ModSlot parse_mod_slot(const json& j) {
 
 inline Groove parse_groove(const json& j, int index) {
     Groove g(get_int(j, "id", index));
+    g.name  = get_str(j, "name", g.name);
     g.steps = parse_int_array(j, "steps", g.steps);
+    // The GROOVE screen indexes all sixteen by cursor row; same repair as `parse_chain`.
+    g.steps.resize(16, -1);
     return g;
 }
 
@@ -226,7 +216,7 @@ inline SFOverrides parse_sf_overrides(const json& j) {
 inline Instrument parse_instrument(const json& j, int index) {
     Instrument i(get_int(j, "id", index));
     i.name           = get_str(j, "name", i.name);
-    i.sampleId       = get_int(j, "sampleId", i.sampleId);   // absent → -1 (field default), NOT index
+    i.sampleId       = get_int(j, "sampleId", i.sampleId);   // absent → -1 (field default), not the index
     i.volume         = get_int(j, "volume", i.volume);
     i.pan            = get_int(j, "pan", i.pan);
     { auto it = j.find("root"); if (it != j.end() && it->is_object()) i.root = parse_note(*it); }
@@ -270,8 +260,8 @@ inline Instrument parse_instrument(const json& j, int index) {
     i.midiLen     = get_int(j, "midiLen", i.midiLen);
     { auto it = j.find("midiCC");
       if (it != j.end() && it->is_array()) {
-          // Re-sized, never appended to: the slot COUNT is a UI constant, and a file written by a
-          // future build with more slots must not hand this one a vector the screen cannot draw.
+          // Re-sized, never appended: the slot count is a UI constant, and a newer build's file must
+          // not hand this one more slots than the screen can draw.
           for (size_t s = 0; s < i.midiCC.size() && s < it->size(); ++s) {
               const json& e = (*it)[s];
               if (!e.is_object()) continue;
@@ -282,6 +272,27 @@ inline Instrument parse_instrument(const json& j, int index) {
     return i;
 }
 
+/**
+ * ⚠️ A destination this build does not know is KEPT (greyed on screen), so a downgrade never deletes
+ * a user's mapping. The controller is clamped to seven bits and each range end to the destination's
+ * units separately, so an inverted range survives.
+ */
+inline MidiMapping parse_midi_mapping(const json& j) {
+    MidiMapping m;
+    m.controller = (uint8_t)std::clamp(get_int(j, "controller", m.controller), 0, 127);
+    m.dest       = (uint8_t)std::clamp(get_int(j, "dest", m.dest), 0, 255);
+    m.scopeIndex = (uint8_t)std::clamp(get_int(j, "scopeIndex", m.scopeIndex), 0, 255);
+    m.rangeMin   = get_int(j, "rangeMin", m.rangeMin);
+    m.rangeMax   = get_int(j, "rangeMax", m.rangeMax);
+    if (const MapDest* d = map_dest(m.dest)) {
+        m.rangeMin = std::clamp(m.rangeMin, d->min, d->max);
+        m.rangeMax = std::clamp(m.rangeMax, d->min, d->max);
+    }
+    // ⚠️ The scope index is not clamped: the pools are unpadded yet, and an index past the end is the
+    // "destination gone" case `map_dest_present` already greys.
+    return m;
+}
+
 template <class T, class F>
 inline std::vector<T> parse_pool(const json& j, const char* k, F&& parse_elem) {
     std::vector<T> v;
@@ -290,13 +301,13 @@ inline std::vector<T> parse_pool(const json& j, const char* k, F&& parse_elem) {
         int idx = 0;
         for (const auto& e : *it) v.push_back(parse_elem(e, idx++));
     }
-    return v;  // absent/empty → normalize() pads to canonical size
+    return v;  // absent/empty → normalize pads to canonical size
 }
 
 }  // namespace detail
 
-// Parse a decoded .ptp JSON object into a Project (scalar/field defaults for anything missing).
-// Pools are taken verbatim; call normalize_project() to repair pool sizes as the loader does.
+// Parse a decoded .ptp object into a Project (field defaults for anything missing). Pools are taken
+// verbatim; normalize_project() repairs their sizes.
 inline Project parse_project(const json& j) {
     using namespace detail;
     Project p;  // scalar members hold their field defaults; pools start EMPTY
@@ -317,9 +328,8 @@ inline Project parse_project(const json& j) {
     p.reverbPreDelay  = get_int(j, "reverbPreDelay", p.reverbPreDelay);
     p.reverbWidth     = get_int(j, "reverbWidth", p.reverbWidth);
     p.reverbMod       = get_int(j, "reverbMod", p.reverbMod);
+    p.reverbSize      = get_int(j, "reverbSize", p.reverbSize);
     p.reverbAlgo      = get_int(j, "reverbAlgo", p.reverbAlgo);
-    p.reverbDecay     = get_int(j, "reverbDecay", p.reverbDecay);
-    p.reverbDensity   = get_int(j, "reverbDensity", p.reverbDensity);
     p.delayTime       = get_int(j, "delayTime", p.delayTime);
     p.delaySync       = get_bool(j, "delaySync", p.delaySync);
     p.delayFeedback   = get_int(j, "delayFeedback", p.delayFeedback);
@@ -344,10 +354,14 @@ inline Project parse_project(const json& j) {
     p.scaleKey    = get_int(j, "scaleKey", p.scaleKey);
     p.midiSyncOut           = get_int(j, "midiSyncOut", p.midiSyncOut);
     p.midiSendProgramChange = get_bool(j, "midiSendProgramChange", p.midiSendProgramChange);
-    { auto it = j.find("midiInputChannels");
+    // ⚠️ Truncated at the cap: every incoming CC sweeps this list, so its length is paid on the audio
+    // path. The ADD row refuses past the same number.
+    { auto it = j.find("midiMappings");
       if (it != j.end() && it->is_array())
-          for (size_t t = 0; t < p.midiInputChannels.size() && t < it->size(); ++t)
-              if ((*it)[t].is_number()) p.midiInputChannels[t] = (*it)[t].get<int>(); }
+          for (const auto& e : *it) {
+              if ((int)p.midiMappings.size() >= MIDI_MAP_MAX) break;
+              if (e.is_object()) p.midiMappings.push_back(parse_midi_mapping(e));
+          } }
     return p;
 }
 
@@ -365,10 +379,10 @@ inline InstrumentPreset parse_instrument_preset(const json& j) {
     return ip;
 }
 
-// ─── migrate + normalize (mirror FileController.decodeAndMigrate) ────────────────────────────────
-
-// Repair, don't reject: truncate over-long pools, pad short ones from a default Project. Returns
-// true if anything changed. Mirrors FileController.normalizeProject.
+// ─── migrate + normalize ────────────────────────────────────────────────────────────────────────
+//
+// Repair, don't reject: truncate over-long pools, pad short ones from a default Project. Returns true
+// if anything changed.
 inline bool normalize_project(Project& p) {
     if ((int)p.phrases.size() == POOL_PHRASES && (int)p.chains.size() == POOL_CHAINS &&
         (int)p.tracks.size() == POOL_TRACKS && (int)p.instruments.size() == POOL_INSTRUMENTS &&
@@ -394,8 +408,7 @@ inline bool normalize_project(Project& p) {
     return true;
 }
 
-// Version 0 → 1: table rows with volume 0xFF meant "full" under the old scheme; the new scheme uses
-// -1 for "no change". Mirrors FileController.migrateProject.
+// Version 0 → 1: a table row volume of 0xFF meant "full"; it now means "no change", spelled -1.
 inline void migrate_project(Project& p) {
     if (p.version < 1) {
         for (auto& t : p.tables)
@@ -414,18 +427,9 @@ inline void normalize_and_migrate(Project& p) {
 // ─── writer ─────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * How a document is laid out. The SCHEMA is identical either way — same keys, same order, same
- * omission rules — so this decides nothing a reader can observe, and both forms load everywhere.
- *
- * ⚠️ THERE IS NO DEFAULT, DELIBERATELY. The two files this writes want opposite things and the
- * reason is size and audience, not taste:
- *   * MINIFIED — the .ptp/.pti. Autosave rewrites a project every 3 s and layout was 82 % of it;
- *     78 KB instead of 443 KB is flash wear on a device whose storage is the part that wears out.
- *     Nobody reads 78 KB of integer arrays, so there is nothing to make readable.
- *   * PRETTY — the .ptt. A theme is ~400 bytes, written when the user presses save, and it is the
- *     one file here a person might open, hand-edit or hand to someone else. Its byte-golden is also
- *     kotlinx's, which is what lets it catch a drift in ours (see theme_io.h).
- * A third writer has to pick a side rather than inherit whichever one was written first.
+ * How a document is laid out — the schema is identical either way and both forms load everywhere.
+ * ⚠️ No default: MINIFIED for .ptp/.pti (autosaved every 3 s, nobody reads it), PRETTY for .ptt themes
+ * (~400 bytes, hand-editable, and its golden is pretty — see theme_io.h). A new writer picks a side.
  */
 enum class JsonLayout { Minified, Pretty };
 
@@ -458,13 +462,12 @@ public:
     void field_string(const char* k, const std::string& v) { key(k); value_string(v); }
 
 private:
-    std::vector<bool> stack_;  // per-open-container: still empty?  (true = no members/elements yet)
+    std::vector<bool> stack_;  // per open container: still empty? (true = no members yet)
     int depth_ = 0;
     bool pretty_;
 
-    // A comma before every member/element except the first one in its container, and — only when
-    // pretty — the newline + indent that follows it. Together with key()'s colon these are the ONLY
-    // places layout is emitted, which is what makes the minified form contain no whitespace at all.
+    // The comma before every member except a container's first, and — pretty only — the newline and
+    // indent. With key()'s colon, the only places layout is emitted.
     void separator() {
         if (!stack_.back()) out += ',';
         stack_.back() = false;
@@ -498,7 +501,7 @@ private:
                 case '\r': out += "\\r";  break;
                 default:
                     if (c < 0x20) { char buf[8]; std::snprintf(buf, sizeof buf, "\\u%04x", c); out += buf; }
-                    else out += (char)c;  // pass UTF-8 / printable ASCII through, like kotlinx
+                    else out += (char)c;  // pass UTF-8 / printable ASCII through
             }
         }
     }
@@ -595,6 +598,9 @@ inline void emit_mod_slot(JsonWriter& w, const ModSlot& m) {
 inline void emit_groove(JsonWriter& w, const Groove& g) {
     w.begin_object();
     w.field_int("id", g.id);
+    if (!g.name.empty()) w.field_string("name", g.name);
+    // ⚠️ `steps` is never default-guarded: every project on disk writes all sixteen, so old blank
+    // grooves load back blank whatever a fresh Groove is born with.
     emit_int_array(w, "steps", g.steps);
     w.end_object();
 }
@@ -603,9 +609,8 @@ inline void emit_scale(JsonWriter& w, const Scale& s) {
     w.begin_object();
     w.field_int("id", s.id);
     if (!s.name.empty()) w.field_string("name", s.name);
-    // ⏸️ `offset` is emitted the moment it is non-default even though nothing reads it — that is the
-    // point of writing it from the first version (call S3): switching microtuning on later must not
-    // need a migration.
+    // ⏸️ `offset` is written once non-default although nothing reads it yet, so microtuning will need
+    // no migration.
     if (s.enabled != std::vector<int>(12, 1)) emit_int_array(w, "enabled", s.enabled);
     if (s.offset  != std::vector<int>(12, 0)) emit_int_array(w, "offset",  s.offset);
     w.end_object();
@@ -693,8 +698,7 @@ inline void emit_instrument(JsonWriter& w, const Instrument& i) {
     if (i.delaySend != 0x00) w.field_int("delaySend", i.delaySend);
     if (i.eqSlot != -1)     w.field_int("eqSlot", i.eqSlot);
     if (i.slicingMode != 0) w.field_int("slicingMode", i.slicingMode);
-    // ⚠️ Defaults to TRUE, so the guard is inverted — the field appears only once turned OFF, which is
-    // what keeps a project that has never seen scales byte-identical.
+    // ⚠️ Defaults to TRUE, so the guard is inverted: the field appears only once turned OFF.
     if (!i.transposeEnabled) w.field_bool("transposeEnabled", i.transposeEnabled);
     if (!i.sliceMarkers.empty()) {
         w.key("sliceMarkers");
@@ -702,11 +706,9 @@ inline void emit_instrument(JsonWriter& w, const Instrument& i) {
         for (int64_t v : i.sliceMarkers) { w.element(); w.value_int(v); }
         w.end_array();
     }
-    // ── EXTERNAL (MIDI plan §7) — appended at the tail, every field default-guarded ───────────────
-    // ⚠️ Guarded, and that is what keeps the eight ptroundtrip goldens byte-identical: an instrument
-    // that is not EXTERNAL holds every default here and so emits not one new byte. `midiCC` is emitted
-    // whole-or-not-at-all (unlike modSlots, which always emits) for the same reason — four "{}"s in
-    // every instrument of every project would move ~4 KB of bytes in files nothing has changed.
+    // ── EXTERNAL — every field default-guarded ───────────────────────────────────────────────────
+    // A non-EXTERNAL instrument emits no new byte. `midiCC` is whole-or-nothing (unlike modSlots) so
+    // ordinary instruments do not each grow four "{}".
     if (i.midiChannel != 0)  w.field_int("midiChannel", i.midiChannel);
     if (i.midiBank != -1)    w.field_int("midiBank", i.midiBank);
     if (i.midiProgram != -1) w.field_int("midiProgram", i.midiProgram);
@@ -736,7 +738,7 @@ inline void emit_pool(JsonWriter& w, const char* key, const std::vector<T>& pool
 
 }  // namespace detail
 
-// Serialize a Project to the exact bytes kotlinx.serialization would write (no trailing newline).
+// Serialize a Project to its .ptp bytes (minified, no trailing newline).
 inline std::string serialize_project(const Project& p) {
     using namespace detail;
     JsonWriter w{JsonLayout::Minified};
@@ -758,9 +760,8 @@ inline std::string serialize_project(const Project& p) {
     if (p.reverbPreDelay != 0)    w.field_int("reverbPreDelay", p.reverbPreDelay);
     if (p.reverbWidth != 0x80)    w.field_int("reverbWidth", p.reverbWidth);
     if (p.reverbMod != 0x10)      w.field_int("reverbMod", p.reverbMod);
+    if (p.reverbSize != 0x60)     w.field_int("reverbSize", p.reverbSize);
     if (p.reverbAlgo != 0)        w.field_int("reverbAlgo", p.reverbAlgo);
-    if (p.reverbDecay != 0x60)    w.field_int("reverbDecay", p.reverbDecay);
-    if (p.reverbDensity != 0x99)  w.field_int("reverbDensity", p.reverbDensity);
     if (p.delayTime != 0x40)      w.field_int("delayTime", p.delayTime);
     if (p.delaySync)              w.field_bool("delaySync", p.delaySync);
     if (p.delayFeedback != 0x60)  w.field_int("delayFeedback", p.delayFeedback);
@@ -781,11 +782,8 @@ inline std::string serialize_project(const Project& p) {
     emit_pool(w, "instruments", p.instruments, emit_instrument);
     emit_pool(w, "tables",      p.tables,      emit_table);
     emit_pool(w, "grooves",     p.grooves,     emit_groove);
-    // ⚠️ THE SCALE POOL IS OMITTED WHOLE WHEN NOTHING HAS BEEN AUTHORED, where every pool above is
-    // always written. That is what keeps this release's bytes identical to the last one's for a song
-    // that has never opened the SCALE screen — sixteen `{"id":n}` objects would move every golden
-    // `.ptp` in the tree, for a pool whose default carries no information. Slot 00 all-enabled IS the
-    // chromatic scale, so an absent pool and a default pool mean the same thing to every reader.
+    // ⚠️ The scale pool is omitted WHOLE when nothing was authored (every other pool is always
+    // written): absent and default both mean chromatic, and older files stay byte-identical.
     {
         bool anyAuthored = (int)p.scales.size() != POOL_SCALES;
         for (const Scale& s : p.scales)
@@ -794,21 +792,31 @@ inline std::string serialize_project(const Project& p) {
         if (anyAuthored) emit_pool(w, "scales", p.scales, emit_scale);
     }
     if (p.scaleKey != 0) w.field_int("scaleKey", p.scaleKey);
-    // MIDI, the project's half (plan §7). ⚠️ `midiSendProgramChange` defaults to TRUE, so its guard is
-    // the inverted one — the field appears only when the user has turned it OFF.
+    // MIDI. ⚠️ `midiSendProgramChange` defaults to TRUE: inverted guard.
     if (p.midiSyncOut != 0)          w.field_int("midiSyncOut", p.midiSyncOut);
     if (!p.midiSendProgramChange)    w.field_bool("midiSendProgramChange", p.midiSendProgramChange);
-    if (p.midiInputChannels != std::vector<int>(8, -1)) {
-        w.key("midiInputChannels");
+    // ⚠️ Omitted whole when empty, so a song that never mapped a knob gains no byte. Fields inside are
+    // guarded against their struct defaults: the usual row is `{"controller":74,"dest":5}`.
+    if (!p.midiMappings.empty()) {
+        w.key("midiMappings");
         w.begin_array();
-        for (int c : p.midiInputChannels) { w.element(); w.value_int(c); }
+        for (const MidiMapping& m : p.midiMappings) {
+            w.element();
+            w.begin_object();
+            if (m.controller != 0)  w.field_int("controller", m.controller);
+            if (m.dest != 0)        w.field_int("dest", m.dest);
+            if (m.scopeIndex != 0)  w.field_int("scopeIndex", m.scopeIndex);
+            if (m.rangeMin != 0)    w.field_int("rangeMin", m.rangeMin);
+            if (m.rangeMax != 255)  w.field_int("rangeMax", m.rangeMax);
+            w.end_object();
+        }
         w.end_array();
     }
     w.end_object();
     return std::move(w.out);
 }
 
-// Serialize an InstrumentPreset (.pti) to kotlinx-exact bytes.
+// Serialize an InstrumentPreset (.pti).
 inline std::string serialize_instrument_preset(const InstrumentPreset& ip) {
     using namespace detail;
     JsonWriter w{JsonLayout::Minified};

@@ -11,10 +11,8 @@ namespace pt::ui {
 
 namespace {
 
-// The two columns. A cell is a label and a value 110 px apart, so a column is about 160 px of glyphs;
-// ⚠️ the second one starts at 270 rather than further out because the panel's right edge is not the
-// constraint — the visualizer strip beside it is, and TIME's widest synced name ("1/16.") reaches
-// nearly 200 px past this.
+// Two columns, label and value 110 px apart. ⚠️ The second starts at 270 because the visualizer
+// strip beside the panel, not its edge, is the constraint: TIME's widest synced name reaches far.
 constexpr int LABEL_X[2] = {10, 270};
 constexpr int VALUE_GAP  = 110;
 
@@ -26,19 +24,13 @@ int delay_preset_of(const songcore::Project& p) {
 }
 
 /**
- * Which preset the reverb's seven cells are, or `kReverbPresetUser` when they are nobody's.
- *
- * ⚠️ It reads SIZE and DAMP as well as the voicing cells, unlike the delay's, whose TYPE leaves TIME
- * and FDBK alone. A reverb's character IS its decay and its brightness — a preset that did not set
- * them would be a few cells of voicing on top of whatever tail happened to be there, which is not a
- * ROOM or a HALL by any reading.
- *
- * ⚠️ DCAY and DENS count even while ALGO is OLD and neither is on screen. They are what the row wrote,
- * so they are part of what the row IS; the apply below writes exactly this set.
+ * Which preset the reverb's six cells are, or `kReverbPresetUser` when they are nobody's.
+ * ⚠️ It reads DCAY, SIZE and DAMP too (the delay's TYPE leaves TIME and FDBK alone): a reverb's
+ * character IS its room, decay and brightness. The apply below writes exactly this set.
  */
 int reverb_preset_of(const songcore::Project& p) {
-    return reverb_preset_match(p.reverbFeedback, p.reverbDamp, p.reverbPreDelay, p.reverbWidth,
-                               p.reverbMod, p.reverbDecay, p.reverbDensity);
+    return reverb_preset_match(p.reverbFeedback, p.reverbSize, p.reverbDamp, p.reverbPreDelay,
+                               p.reverbWidth, p.reverbMod);
 }
 
 }  // namespace
@@ -57,9 +49,8 @@ const std::vector<std::string>& EffectModule::delay_type_names() {
     static const std::vector<std::string> names = [] {
         std::vector<std::string> v;
         for (int i = 0; i < kDelayPresetCount; ++i) v.emplace_back(kDelayPresets[i].name);
-        // ⚠️ The name for "these cells are nobody's preset", at kDelayPresetUser. It is a LABEL and
-        // not a preset: nothing can be applied from it, and the TYPE cell reaches it only by the
-        // user turning one of the four cells below.
+        // "These cells are nobody's preset", at kDelayPresetUser — a label, never applied; TYPE
+        // reaches it only when a cell below is turned by hand.
         v.emplace_back("USER");
         return v;
     }();
@@ -86,15 +77,10 @@ void EffectModule::draw(Canvas& c, int x, int y, const EffectState& s) const {
     c.fill_rect(x, y, WIDTH, HEIGHT, t.background);
 
     // Where every row and every header lands, in one walk. Nothing below counts lines for itself.
-    // ⚠️ It takes the ALGO cell because two reverb rows are hidden under algorithm 0 — everything
-    // beneath them moves up a line when they go.
-    const EffectsLayout lay = effects_layout(p.reverbAlgo);
+    const EffectsLayout lay = effects_layout();
 
-    // The title stays put and the lines below it scroll under it, the way SETTINGS' debug rows do.
-    // The scroll is DERIVED from the cursor row each frame — no stored scroll state — centring the
-    // cursor in the viewport and pinned at both ends by the clamp. The lines fit the panel as the
-    // screen stands today, so it is zero throughout; the clip below is what keeps that true, and is
-    // what a line added later would scroll under rather than draw over the title.
+    // The lines below the title scroll under it, derived from the cursor row each frame. They fit
+    // today, so the scroll is zero; the clip keeps a line added later from drawing over the title.
     c.draw_text("EFFECTS", x + LABEL_X[0], y + TEXT_PADDING, t.textTitle, CHAR_SPACING, FONT_SCALE);
 
     const int firstLineY = y + TEXT_PADDING + ROW_HEIGHT + 14;   // the gap SETTINGS leaves too
@@ -103,10 +89,8 @@ void EffectModule::draw(Canvas& c, int x, int y, const EffectState& s) const {
     const int cursorTop  = (lay.rowLine[static_cast<size_t>(clamp(s.cursorRow, 0, MAX_CURSOR_ROW))] - 1)
                            * ROW_HEIGHT;
 
-    // ⚠️ Scrolled in WHOLE ROWS, unlike SETTINGS' free pixel scroll. This screen is a form of labelled
-    // rows and section headers, and a form cut through the middle of a header reads as broken rather
-    // than as "there is more above". The row count is rounded UP, so the last row is still reachable
-    // at full scroll even though that leaves a little blank below it.
+    // ⚠️ Scrolled in WHOLE ROWS: a form cut through a header reads as broken. Rounded up, so the
+    // last row is reachable at full scroll.
     const int maxRows = (std::max(0, contentH - viewportH) + ROW_HEIGHT - 1) / ROW_HEIGHT;
     const int rows    = clamp((cursorTop + ROW_HEIGHT / 2 - viewportH / 2 + ROW_HEIGHT / 2)
                                   / ROW_HEIGHT,
@@ -124,14 +108,13 @@ void EffectModule::draw(Canvas& c, int x, int y, const EffectState& s) const {
                     t.textTitle, CHAR_SPACING, FONT_SCALE);
     };
 
-    // A parameter cell, addressed by its CURSOR row: both where it lands on screen and which column
-    // it lands in come out of the same table the cursor walks, so a row moved there moves here too
-    // and cannot end up drawn in one place and reachable in another.
+    // A parameter cell, addressed by its CURSOR row: its position and column come from the table the
+    // cursor walks, so it cannot be drawn in one place and reachable in another.
     const auto param = [&](const char* name, int row, const std::string& text) {
         const int  ry    = rowY(lay.rowLine[static_cast<size_t>(row)]);
         const int  lx    = x + LABEL_X[effects_cell_pos(row).column];
         const bool sel   = (s.cursorRow == row);
-        c.draw_text(name, lx, ry, sel ? t.textCursor : t.textParam, CHAR_SPACING, FONT_SCALE);
+        c.draw_text(name, lx, ry, sel ? cursor_mark_ink(t) : t.textParam, CHAR_SPACING, FONT_SCALE);
         draw_cursor_cell(c, text, lx + VALUE_GAP, ry, sel, t.textValue, t);
     };
 
@@ -140,7 +123,7 @@ void EffectModule::draw(Canvas& c, int x, int y, const EffectState& s) const {
         const int  ry  = rowY(lay.rowLine[static_cast<size_t>(row)]);
         const int  lx  = x + LABEL_X[effects_cell_pos(row).column];
         const bool sel = (s.cursorRow == row);
-        c.draw_text("INP EQ", lx, ry, sel ? t.textCursor : t.textParam, CHAR_SPACING, FONT_SCALE);
+        c.draw_text("INP EQ", lx, ry, sel ? cursor_mark_ink(t) : t.textParam, CHAR_SPACING, FONT_SCALE);
         draw_eq_cell(c, lx + VALUE_GAP, ry, eq_slot, sel, t);
     };
 
@@ -150,34 +133,22 @@ void EffectModule::draw(Canvas& c, int x, int y, const EffectState& s) const {
 
     // ── Reverb ───────────────────────────────────────────────────────────────────────────────────
     header("REVERB", EffectsSection::REVERB);
+    // Which reverb reads the cells below. ⚠️ It writes none of them, so the numbers stay what the
+    // user typed and only the sound changes.
+    param("ALGO", ROW_REV_ALGO, reverb_algo_name(p.reverbAlgo));
     // ⚠️ Read back from the cells rather than stored, so it says USER the moment any of them is
     // turned by hand. TYPE is a starting place, not a mode — same as the delay's below.
     param("TYPE", ROW_REV_TYPE, reverb_type_names()[static_cast<size_t>(reverb_preset_of(p))]);
-    // ⚠️ Which reverb is sounding, NOT a set of values — it is the one cell in this section that does
-    // not write any of the others. The four cells below go on saying what the user typed and the
-    // chosen algorithm reads them its own way, so the screen looks unchanged and the sound does not.
-    param("ALGO", ROW_REV_ALGO, reverb_algo_name(p.reverbAlgo));
+    param("SIZE", ROW_REV_SIZE, hex2(p.reverbSize));
 
     param("PRE",  ROW_REV_PRE,  hex2(p.reverbPreDelay));
-    param("SIZE", ROW_REV_SIZE, hex2(p.reverbFeedback));
+    param("DCAY", ROW_REV_DECAY, hex2(p.reverbFeedback));
 
     param("WIDE", ROW_REV_WIDE, hex2(p.reverbWidth));
     param("DAMP", ROW_REV_DAMP, hex2(p.reverbDamp));
 
     eq_param(ROW_REV_EQ, p.reverbInputEq);
-    // ⚠️ **THE ONE CELL HERE WHOSE LABEL DEPENDS ON ANOTHER CELL.** It is the same row and the same
-    // stored byte either way; what changes is which algorithm reads it, and the two readings have no
-    // word in common — a pitch wander on OLD, the early reflections' share on MVERB. Calling it MOD
-    // under MVERB was a label that named something the algorithm does not have.
-    param(p.reverbAlgo == 1 ? "EARLY" : "MOD", ROW_REV_MOD, hex2(p.reverbMod));
-
-    // ⚠️ The two cells algorithm 0 has no counterpart for. Not drawn at all under it — the row table
-    // hides them and `lay` above has already closed the gap, so this is the only other place that
-    // has to know.
-    if (effects_row_visible(EffectsRow::REV_DECAY, p.reverbAlgo)) {
-        param("DCAY", ROW_REV_DECAY,   hex2(p.reverbDecay));
-        param("DENS", ROW_REV_DENSITY, hex2(p.reverbDensity));
-    }
+    param("MOD",  ROW_REV_MOD,  hex2(p.reverbMod));
 
     // ── Delay ────────────────────────────────────────────────────────────────────────────────────
     header("DELAY", EffectsSection::DELAY);
@@ -208,9 +179,8 @@ CursorContext EffectModule::cursor_context(const EffectState& s) const {
 
     switch (s.cursorRow) {
         case ROW_MASTER_TYPE: {
-            // ⚠️ Built by hand rather than through cc::hex_byte, because Kotlin builds it by hand: it is
-            // a two-state toggle, so it gets increment and decrement and NOTHING else — no fast step (a
-            // large step of 1 that wrapped would be a second way to do the same thing), no delete.
+            // ⚠️ Built by hand: a two-state toggle gets increment and decrement and nothing else —
+            // no fast step, no delete.
             CursorContext c;
             c.valueType                 = CursorValueType::HEX_BYTE;
             c.capabilities.canIncrement = true;
@@ -224,19 +194,22 @@ CursorContext EffectModule::cursor_context(const EffectState& s) const {
         }
 
         case ROW_REV_TYPE: {
-            // A short named list, so it steps and wraps and does nothing else — no fast step, and no
-            // delete, because there is no empty preset.
-            //
-            // ⚠️ USER is inside the range only while the cells ARE nobody's preset — the same shape
-            // as the delay's TYPE below, and for the same reason: it is a place the cursor can LEAVE
-            // and never a place it can be sent.
+            // A short named list: steps and wraps, no fast step, no delete (no empty preset).
+            // ⚠️ USER is in range only while the cells ARE nobody's preset — a place the cursor
+            // can leave, never one it can be sent to.
             const int cur = reverb_preset_of(p);
             return cc::index_cycle(cur, cur == kReverbPresetUser ? kReverbPresetCount + 1
                                                                  : kReverbPresetCount);
         }
 
-        case ROW_REV_SIZE:
+        case ROW_REV_ALGO:
+            // A short named list that steps and wraps. No USER entry: every value is a real reverb.
+            return cc::index_cycle(clamp(p.reverbAlgo, 0, kReverbAlgoCount - 1), kReverbAlgoCount);
+
+        case ROW_REV_DECAY:
             return cc::hex_byte(p.reverbFeedback, 0, 255, -1, false, false, false, /*def=*/0x60);
+        case ROW_REV_SIZE:
+            return cc::hex_byte(p.reverbSize, 0, 255, -1, false, false, false, /*def=*/0x60);
         case ROW_REV_DAMP:
             return cc::hex_byte(p.reverbDamp, 0, 255, -1, false, false, false, /*def=*/0x80);
         case ROW_REV_PRE:
@@ -245,25 +218,13 @@ CursorContext EffectModule::cursor_context(const EffectState& s) const {
             return cc::hex_byte(p.reverbWidth, 0, 255, -1, false, false, false, /*def=*/0x80);
         case ROW_REV_MOD:
             return cc::hex_byte(p.reverbMod, 0, 255, -1, false, false, false, /*def=*/0x40);
-        case ROW_REV_DECAY:
-            return cc::hex_byte(p.reverbDecay, 0, 255, -1, false, false, false, /*def=*/0x60);
-        case ROW_REV_DENSITY:
-            return cc::hex_byte(p.reverbDensity, 0, 255, -1, false, false, false, /*def=*/0x99);
-        case ROW_REV_ALGO:
-            // A short named list that steps and wraps, like the two TYPE cells — but with no USER
-            // entry, because every value here is a real algorithm and none of them is "nobody's".
-            return cc::index_cycle(clamp(p.reverbAlgo, 0, kReverbAlgoCount - 1), kReverbAlgoCount);
         case ROW_REV_EQ:
             return cc::hex_byte(p.reverbInputEq < 0 ? -1 : p.reverbInputEq, 0, 127,
                                 /*empty_value=*/-1, /*can_delete=*/true, /*can_insert=*/true);
 
         case ROW_DLY_TYPE: {
-            // A short named list, so it steps and wraps and does nothing else — no fast step over
-            // three entries, and no delete, because there is no empty preset.
-            //
-            // ⚠️ USER is inside the range only while the cells ARE nobody's preset. That is what makes
-            // it a place the cursor can LEAVE and never a place it can be sent: from USER, one press
-            // either way lands on a real preset, and from a real preset the list is the three names.
+            // As the reverb's TYPE: steps and wraps, no fast step, no delete; USER is in range only
+            // while the cells are nobody's preset.
             const int cur = delay_preset_of(p);
             return cc::index_cycle(cur, cur == kDelayPresetUser ? kDelayPresetCount + 1
                                                                 : kDelayPresetCount);
@@ -294,6 +255,36 @@ CursorContext EffectModule::cursor_context(const EffectState& s) const {
     }
 }
 
+// ─── What the cursor is standing on, by NAME ─────────────────────────────────────────────────────
+
+songcore::MapTarget EffectModule::map_target(const EffectState& s) const {
+    using songcore::MapDestId;
+    switch (static_cast<EffectsRow>(s.cursorRow)) {
+        case EffectsRow::REV_DECAY:  return {MapDestId::REV_DCAY, 0};
+        case EffectsRow::REV_DAMP:   return {MapDestId::REV_DAMP, 0};
+        case EffectsRow::REV_PRE:    return {MapDestId::REV_PRE,  0};
+        case EffectsRow::REV_WIDE:   return {MapDestId::REV_WIDE, 0};
+        case EffectsRow::REV_MOD:    return {MapDestId::REV_MOD,  0};
+        case EffectsRow::REV_SIZE:   return {MapDestId::REV_SIZE, 0};
+        case EffectsRow::DLY_TIME:   return {MapDestId::DLY_TIME, 0};
+        case EffectsRow::DLY_FDBK:   return {MapDestId::DLY_FDBK, 0};
+        case EffectsRow::DLY_REV:    return {MapDestId::DLY_SEND, 0};
+        case EffectsRow::DLY_TONE:   return {MapDestId::DLY_TONE, 0};
+        case EffectsRow::DLY_WOBBLE: return {MapDestId::DLY_WOBL, 0};
+        // ⚠️ The two WET cells are NOT here. They are the send returns and they live on the MIXER,
+        // which is where the catalogue's `REV WET` and `DLY WET` are learned.
+        case EffectsRow::MASTER_TYPE:
+        case EffectsRow::REV_EQ:
+        case EffectsRow::DLY_EQ:
+        case EffectsRow::DLY_TYPE:
+        case EffectsRow::DLY_PONG:
+        case EffectsRow::REV_TYPE:
+        case EffectsRow::REV_ALGO:
+            break;
+    }
+    return {};
+}
+
 // ─── Input ───────────────────────────────────────────────────────────────────────────────────────
 
 EffectInputResult EffectModule::handle_input(songcore::Project& p, int cursor_row,
@@ -306,9 +297,20 @@ EffectInputResult EffectModule::handle_input(songcore::Project& p, int cursor_ro
             p.masterBusFx = clamp(action.value, 0, 1);
             return {true};
 
-        case ROW_REV_SIZE:
+        case ROW_REV_DECAY:
             if (!isSet) break;
             p.reverbFeedback = clamp(action.value, 0, 255);
+            return {true};
+
+        case ROW_REV_SIZE:
+            if (!isSet) break;
+            p.reverbSize = clamp(action.value, 0, 255);
+            return {true};
+
+        case ROW_REV_ALGO:
+            // ⚠️ It writes nothing but itself, so switching back and forth loses no cell.
+            if (!isSet) break;
+            p.reverbAlgo = clamp(action.value, 0, kReverbAlgoCount - 1);
             return {true};
 
         case ROW_REV_DAMP:
@@ -317,26 +319,20 @@ EffectInputResult EffectModule::handle_input(songcore::Project& p, int cursor_ro
             return {true};
 
         case ROW_REV_TYPE: {
-            // ⚠️ **THE PRESET IS APPLIED AND THEN FORGOTTEN** — it writes the seven cells and stores no
-            // name, so what the row reads afterwards is whatever those seven now are. Landing on USER
-            // writes nothing, because USER is not a set of values: it is the absence of a match.
-            //
-            // ⚠️⚠️ **EVERY CELL `reverb_preset_match` READS MUST BE WRITTEN HERE, INCLUDING THE TWO THAT
-            // ARE OFF SCREEN ON ALGORITHM 0.** Writing fewer than the match reads is not a partial
-            // preset — it is a TYPE cell that can never leave USER: the row is applied, the two
-            // unwritten cells still hold what the user typed, the match fails, and the only presets
-            // still reachable are the two either side of USER in the cycle.
+            // ⚠️ THE PRESET IS APPLIED AND THEN FORGOTTEN: it writes the cells and stores no name;
+            // USER writes nothing (it is the absence of a match).
+            // ⚠️⚠️ EVERY CELL `reverb_preset_match` READS MUST BE WRITTEN HERE, or TYPE can never
+            // leave USER — the unwritten cell still holds what the user typed and the match fails.
             if (!isSet) break;
             const int idx = clamp(action.value, 0, kReverbPresetCount);
             if (idx >= kReverbPresetCount) return {false};
             const ReverbPreset& r = kReverbPresets[idx];
-            p.reverbFeedback = r.size;
+            p.reverbFeedback = r.decay;
+            p.reverbSize     = r.room;
             p.reverbDamp     = r.damp;
             p.reverbPreDelay = r.pre;
             p.reverbWidth    = r.width;
             p.reverbMod      = r.mod;
-            p.reverbDecay    = r.decay;
-            p.reverbDensity  = r.density;
             return {true};
         }
 
@@ -355,23 +351,6 @@ EffectInputResult EffectModule::handle_input(songcore::Project& p, int cursor_ro
             p.reverbMod = clamp(action.value, 0, 255);
             return {true};
 
-        case ROW_REV_DECAY:
-            if (!isSet) break;
-            p.reverbDecay = clamp(action.value, 0, 255);
-            return {true};
-
-        case ROW_REV_DENSITY:
-            if (!isSet) break;
-            p.reverbDensity = clamp(action.value, 0, 255);
-            return {true};
-
-        case ROW_REV_ALGO:
-            // ⚠️ **IT WRITES NOTHING BUT ITSELF.** The five voicing cells are deliberately left alone,
-            // so switching back and forth is lossless and a project keeps the numbers the user typed.
-            if (!isSet) break;
-            p.reverbAlgo = clamp(action.value, 0, kReverbAlgoCount - 1);
-            return {true};
-
         case ROW_REV_EQ:
             switch (action.type) {
                 case ActionType::SET_VALUE:      p.reverbInputEq = clamp(action.value, 0, 127); break;
@@ -382,9 +361,8 @@ EffectInputResult EffectModule::handle_input(songcore::Project& p, int cursor_ro
             return {true};
 
         case ROW_DLY_TYPE: {
-            // ⚠️ **THE PRESET IS APPLIED AND THEN FORGOTTEN** — it writes the three cells and stores no
-            // name, so what the row reads afterwards is whatever those three now are. Landing on USER
-            // writes nothing, because USER is not a set of values: it is the absence of a match.
+            // ⚠️ THE PRESET IS APPLIED AND THEN FORGOTTEN: three cells written, no name; USER
+            // writes nothing.
             if (!isSet) break;
             const int idx = clamp(action.value, 0, kDelayPresetCount);
             if (idx >= kDelayPresetCount) return {false};
